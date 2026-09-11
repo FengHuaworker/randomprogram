@@ -1,0 +1,266 @@
+# -*- coding: utf-8 -*-
+"""
+界面语言：中文 / English（设置中切换，即时生效）。
+说明：名单、历史记录、导出模板等“数据内容”保持原始语言，不参与翻译。
+用法：from .lang import t, set_lang, get_lang
+      t("nav_draw") / t("pool_ok", n=5)
+"""
+
+LANG = "zh"
+
+_TABLE: dict[str, dict[str, str]] = {
+    "zh": {
+        # ---- 顶栏 / 导航 ----
+        "app_title": "随机抽号",
+        "nav_draw": "抽号", "nav_history": "抽号记录", "nav_stats": "概率统计",
+        "nav_config": "配置展示", "nav_shield": "屏蔽管理",
+        "btn_new_class": "新建班级", "btn_rename_class": "重命名", "btn_delete_class": "删除班级",
+        "btn_settings": "设置",
+        "badge_simple": "简易模式", "badge_advanced": "高级模式",
+        # ---- 抽号页 ----
+        "draw_start": "开 始", "draw_stop": "停 止",
+        "draw_reset_round": "重置本轮", "draw_export": "导出记录",
+        "round_title": "本轮已抽", "pool_title": "摇号池预览",
+        "pool_ok": "可用 {n}", "pool_block": "屏蔽 {long} 长 / {short} 短", "pool_cool": "冷却 {n}",
+        "name_placeholder": "点击「开始抽号」或按空格键",
+        "hint_no_config": "尚未配置班级人数，请点击「设置」完成配置",
+        "hint_empty": "摇号池为空：所有人都在屏蔽或冷却中，可「重置本轮」或调整屏蔽",
+        "hint_pool": "摇号池共 {n} 人，每次抽取后自动排除已中者{extra}",
+        "hint_advanced": "（高级模式显示姓名）",
+        "hint_anti_off": "（防重已关闭，同一人可重复抽中）",
+        "snack_pool_empty": "摇号池为空：请检查人数配置、屏蔽名单或防重冷却",
+        "snack_reset_none": "本轮还没有抽中记录，无需重置",
+        "snack_reset_done": "已重置：所有人已回到摇号池",
+        "snack_export_ok": "记录已导出 → exports\\{name}",
+        "snack_export_fail": "导出失败：exports 目录不可写，请检查软件所在文件夹权限。",
+        # ---- 记录页 ----
+        "history_title": "抽号记录",
+        "history_hint": "记录无限期永久保存（不可删除），按时间倒序排列。",
+        "export_txt": "导出为TXT",
+        "col_no": "序号", "col_time": "抽号时间", "col_num": "抽中号码",
+        "col_name": "学生姓名", "col_mode": "模式",
+        "mode_simple": "简易", "mode_advanced": "高级",
+        # ---- 统计页 ----
+        "stats_title": "概率统计",
+        "col_rank": "排名", "col_key": "号码 / 姓名", "col_count": "抽中次数", "col_pct": "占比",
+        # ---- 配置页 ----
+        "config_title": "班级配置状态", "roster_title": "名单与导入",
+        "roster_hint": "高级模式名单：一行一个姓名，按学号顺序。可直接编辑、追加、删除，保存后自动同步总人数。",
+        "roster_empty": "（尚未上传名单）",
+        "edit_roster": "编辑名单",
+        "anti_title": "防重设置",
+        "anti_label": "启用防重：学生被抽中后，在设置的时间窗口内不再进入摇号池",
+        "anti_on_fmt": "开启 · 时间窗口 {n} 小时", "anti_off": "关闭（可重复抽中同一人）",
+        "reconfig_btn": "重新配置（引导向导）",
+        "row_name": "当前班级", "row_mode": "引导模式", "row_total": "班级总人数",
+        "row_all": "抽号池（全部）", "row_pool": "摇号池（当前可用）",
+        "row_long": "长期屏蔽名单", "row_short": "短期屏蔽名单",
+        "row_anti": "防重设置", "row_path": "配置文件路径",
+        "unit_person": "{n} 人", "none_list": "（无）",
+        "unit_hours": "小时",
+        "pool_detail": "{n} 人（长期屏蔽 {long} · 短期 {short} · 冷却 {cool}）",
+        # ---- 屏蔽页 ----
+        "shield_title": "屏蔽管理",
+        "shield_hint": "长期屏蔽：该学生永不进入摇号池（直到手动移出）。短期屏蔽：当天不进入摇号池，次日自动解除。选中表格中的学生后点按下方按钮批量操作。",
+        "col_status": "状态", "col_note": "备注", "status_normal": "正常", "status_long": "长期屏蔽",
+        "status_short": "短期屏蔽(今天)", "note_never": "永不参与", "note_today": "截止今日24点",
+        "add_long": "添加到长期屏蔽", "rm_long": "移出长期屏蔽",
+        "add_short": "添加到短期(今天)", "rm_short": "移出短期",
+        "clear_long": "清空长期屏蔽", "clear_short": "清空短期屏蔽",
+        "shield_summary": "共 {total} 名学生 · 长期屏蔽 {long} 人 · 今天短期屏蔽 {short} 人（次日自动解除）",
+        "snack_select_first": "请先在表格中选中学生（可点击行或拖动批量选择）",
+        # ---- 设置弹窗 ----
+        "settings_title": "设置",
+        "set_lang": "界面语言", "lang_zh": "中文", "lang_en": "English",
+        "set_mode": "引导模式", "run_wizard": "重新运行配置向导（模式 / 人数 / 名单）",
+        "set_anti": "防重设置",
+        "set_save": "保存设置",
+        "settings_saved": "设置已保存并生效",
+        # ---- 通用弹窗 ----
+        "dlg_ok": "确定", "dlg_cancel": "取消", "dlg_know": "知道了",
+        "dlg_delete": "删除", "dlg_back": "返回", "dlg_reset": "重置", "dlg_still": "仍要删除",
+        "wizard_title_fmt": "配置引导 · {name}",
+        "wizard_title_broken_fmt": "配置引导 · {name}",
+        "wiz_step1": "第 1 步 / 共 2 步 · 选择引导模式",
+        "wiz_step2": "第 2 步 / 共 {total} 步 · 设置班级人数",
+        "wiz_step3": "第 3 步 / 共 3 步 · 上传班级名单",
+        "wiz_next": "下一步", "wiz_prev": "上一步", "wiz_done": "完成",
+        "mode_simple": "简易模式", "mode_simple_desc": "只需输入班级人数，抽号只显示号码。最快上手。",
+        "mode_advanced": "高级模式", "mode_advanced_desc": "上传名单（一个姓名一行），抽号显示姓名，可用完整功能。",
+        "wiz_pick_mode": "请先点击选择一种引导模式",
+        "wiz_total": "请输入班级总人数（正整数）：",
+        "wiz_total_adv": "该班级总人数（上传名单后将按名单人数自动校正）：",
+        "wiz_roster_tip": "名单格式：一行一个姓名，按学号顺序排列（示例见 template/template.txt ）。",
+        "wiz_pick_file": "选择班级名单文件", "wiz_download_tpl": "下载示例模板",
+        "wiz_roster_none": "尚未选择名单", "wiz_roster_loaded": "已读取 {n} 个姓名：",
+        "wiz_tpl_done": "示例模板已保存到：\n{path}",
+        "wiz_tpl_fail": "模板生成失败，请检查软件目录是否可写。",
+        "wiz_read_fail": "无法读取该文件，请确认是 UTF-8 或 GBK 编码的文本文件。",
+        "wiz_no_names": "文件中没有有效姓名（一行一个）。",
+        # ---- 确认 / 提示 ----
+        "confirm_break_fmt": "「{name}」的配置文件丢失或损坏，请重新配置",
+        "confirm_delete_class_fmt": "确定要删除班级「{name}」吗？\n\n该班级的全部名单、屏蔽、防重、抽号历史将随班级一并移除（删除前会自动归档到 backups 文件夹，可找回）。",
+        "confirm_delete_class2_fmt": "【再次确认】班级「{name}」删除后不可在班级列表中恢复！\n确定继续删除？",
+        "confirm_reset_fmt": "确定要重置本轮吗？\n\n将清空本轮已抽 {n} 人与全部防重冷却记录，\n所有人重新回到摇号池。\n（永久抽号历史不受影响）",
+        "info_created_fmt": "已创建班级「{name}」· 点击「设置」快速配置",
+        "info_config_done": "「{name}」配置已更新并保存",
+        "err_name_exists_fmt": "已存在同名班级「{name}」，请换一个名字。",
+        "info_classname_hint": "请输入新班级名称：", "info_rename_hint": "修改班级名称：",
+        "classname_placeholder": "例如：三年级1班",
+        "dlg_title_new": "新建班级", "dlg_title_rename": "重命名班级",
+        "roster_title_fmt": "名单编辑 · {name}",
+        "roster_edit_hint": "直接在“姓名”列修改；学号自动按顺序编号。保存后立即生效。",
+        "roster_add": "追加一行", "roster_del": "删除选中", "roster_up": "上移",
+        "roster_down": "下移", "roster_reupload": "重新上传…",
+        "roster_save": "保存",
+        "roster_count_fmt": "共 {n} 人",
+        "roster_reupload_title": "重新上传名单",
+        "pick_title_pre": "选择要长期屏蔽的学生", "pick_title_short": "选择今天要屏蔽的学生",
+        "pick_search": "输入姓名或号码筛选…", "pick_all": "全选", "pick_clear": "清空",
+        "pick_count_fmt": "已选 {n} 人", "unnamed": "（未命名）",
+        "clear_long_title": "清空长期屏蔽", "clear_short_title": "清空短期屏蔽",
+        "clear_long_fmt": "确定清空该班级全部长期屏蔽名单吗？\n（该操作不影响抽号历史）",
+        "clear_short_fmt": "确定清空该班级全部短期屏蔽名单吗？\n（该操作不影响抽号历史）",
+        # ---- 文件选择器 ----
+        "fp_title": "选择文件", "fp_choose": "选择", "fp_up": "上级目录",
+        "fp_hint_fmt": "双击文件夹进入；点击文件后点「选择」。仅显示 {suffixes} 文件。",
+        "fp_empty": "（空目录）", "fp_cannot": "（无法访问该目录）",
+    },
+    "en": {
+        # ---- Top bar / Nav ----
+        "app_title": "Lucky Draw",
+        "nav_draw": "Draw", "nav_history": "History", "nav_stats": "Stats",
+        "nav_config": "Settings", "nav_shield": "Exclude",
+        "btn_new_class": "New Class", "btn_rename_class": "Rename", "btn_delete_class": "Delete",
+        "btn_settings": "Settings",
+        "badge_simple": "Simple Mode", "badge_advanced": "Advanced Mode",
+        # ---- Draw page ----
+        "draw_start": "START", "draw_stop": "STOP",
+        "draw_reset_round": "Reset Round", "draw_export": "Export",
+        "round_title": "This Round", "pool_title": "Draw Pool",
+        "pool_ok": "{n} ready", "pool_block": "{long} long / {short} today",
+        "pool_cool": "{n} cooling",
+        "name_placeholder": "Tap \"Start\" or press Space",
+        "hint_no_config": "No class size configured — tap \"Settings\" to set up",
+        "hint_empty": "Pool is empty: everyone is excluded or cooling. Try \"Reset Round\"",
+        "hint_pool": "Pool: {n} students; drawn ones are auto-excluded{extra}",
+        "hint_advanced": " (names shown in Advanced Mode)",
+        "hint_anti_off": " (anti-dup OFF, repeats allowed)",
+        "snack_pool_empty": "Draw pool is empty — check size, exclusions or cooling",
+        "snack_reset_none": "Nothing drawn this round yet",
+        "snack_reset_done": "Round reset: everyone is back in the pool",
+        "snack_export_ok": "Exported → exports\\{name}",
+        "snack_export_fail": "Export failed: exports folder is not writable. Check permissions.",
+        # ---- History ----
+        "history_title": "Draw History",
+        "history_hint": "Records are kept forever (not deletable), newest first.",
+        "export_txt": "Export TXT",
+        "col_no": "#", "col_time": "Time", "col_num": "No.",
+        "col_name": "Student", "col_mode": "Mode",
+        "mode_simple": "Simple", "mode_advanced": "Advanced",
+        # ---- Stats ----
+        "stats_title": "Statistics",
+        "col_rank": "Rank", "col_key": "No. / Name", "col_count": "Times", "col_pct": "Share",
+        # ---- Config ----
+        "config_title": "Class Configuration", "roster_title": "Roster & Import",
+        "roster_hint": "Advanced mode roster: one name per line, in number order. Edit, add or delete; size syncs automatically.",
+        "roster_empty": "(no roster yet)",
+        "edit_roster": "Edit Roster",
+        "anti_title": "Anti-Duplicate",
+        "anti_label": "Avoid repeats: a drawn student re-enters the pool only after the time window",
+        "anti_on_fmt": "On · window {n} h", "anti_off": "Off (same student may repeat)",
+        "reconfig_btn": "Run Setup Wizard (mode / size / roster)",
+        "row_name": "Class", "row_mode": "Mode", "row_total": "Size",
+        "row_all": "All students", "row_pool": "Current pool",
+        "row_long": "Long-term excluded", "row_short": "Today excluded",
+        "row_anti": "Anti-duplicate", "row_path": "Config path",
+        "unit_person": "{n}", "none_list": "(none)",
+        "unit_hours": "h",
+        "pool_detail": "{n} (long {long} · today {short} · cooling {cool})",
+        # ---- Shield page ----
+        "shield_title": "Exclusions",
+        "shield_hint": "Long-term: never in the pool until removed. Today: excluded for the day, auto-clears next day. Select students below, then tap the buttons.",
+        "col_status": "Status", "col_note": "Notes", "status_normal": "OK", "status_long": "Long-term",
+        "status_short": "Today only", "note_never": "Always out", "note_today": "Until midnight",
+        "add_long": "Add long-term", "rm_long": "Remove long-term",
+        "add_short": "Add today", "rm_short": "Remove today",
+        "clear_long": "Clear long-term", "clear_short": "Clear today",
+        "shield_summary": "{total} students · {long} long-term · {short} today (auto-clears tomorrow)",
+        "snack_select_first": "Select students in the table first",
+        # ---- Settings dialog ----
+        "settings_title": "Settings",
+        "set_lang": "Language", "lang_zh": "中文", "lang_en": "English",
+        "set_mode": "Setup Mode", "run_wizard": "Run Setup Wizard (mode / size / roster)",
+        "set_anti": "Anti-Duplicate",
+        "set_save": "Save Settings",
+        "settings_saved": "Settings saved",
+        # ---- Common dialogs ----
+        "dlg_ok": "OK", "dlg_cancel": "Cancel", "dlg_know": "Got it",
+        "dlg_delete": "Delete", "dlg_back": "Back", "dlg_reset": "Reset", "dlg_still": "Delete anyway",
+        "wizard_title_fmt": "Setup · {name}",
+        "wizard_title_broken_fmt": "Setup · {name}",
+        "wiz_step1": "Step 1 of 2 · Choose mode",
+        "wiz_step2": "Step 2 of {total} · Set class size",
+        "wiz_step3": "Step 3 of 3 · Upload roster",
+        "wiz_next": "Next", "wiz_prev": "Back", "wiz_done": "Done",
+        "mode_simple": "Simple Mode", "mode_simple_desc": "Just the size; only numbers are drawn. Fastest.",
+        "mode_advanced": "Advanced Mode", "mode_advanced_desc": "Upload a roster (one name per line); names are shown.",
+        "wiz_pick_mode": "Please choose a mode first",
+        "wiz_total": "Class size (positive integer):",
+        "wiz_total_adv": "Class size (auto-corrected after roster upload):",
+        "wiz_roster_tip": "Format: one name per line, in number order (see template/template.txt).",
+        "wiz_pick_file": "Choose roster file", "wiz_download_tpl": "Download template",
+        "wiz_roster_none": "No roster selected", "wiz_roster_loaded": "{n} names loaded:",
+        "wiz_tpl_done": "Template saved to:\n{path}",
+        "wiz_tpl_fail": "Could not create the template. Check folder permissions.",
+        "wiz_read_fail": "Cannot read the file. Please use UTF-8 or GBK encoding.",
+        "wiz_no_names": "No valid names found (one per line).",
+        # ---- Confirm / info ----
+        "confirm_break_fmt": "Config for \"{name}\" is missing or broken — please set it up again",
+        "confirm_delete_class_fmt": "Delete class \"{name}\"?\n\nIts roster, exclusions, anti-dup records and history will be removed (a backup is kept in the backups folder first).",
+        "confirm_delete_class2_fmt": "[Confirm] Class \"{name}\" cannot be restored from the list!\nContinue?",
+        "confirm_reset_fmt": "Reset this round?\n\nThis clears the {n} drawn students and all cooling records.\n(Permanent history is kept.)",
+        "info_created_fmt": "Class \"{name}\" created · tap Settings to configure",
+        "info_config_done": "Configured \"{name}\"",
+        "err_name_exists_fmt": "A class named \"{name}\" already exists.",
+        "info_classname_hint": "Enter the class name:", "info_rename_hint": "Change the class name:",
+        "classname_placeholder": "e.g. Grade 3 · Class 1",
+        "dlg_title_new": "New Class", "dlg_title_rename": "Rename Class",
+        "roster_title_fmt": "Roster · {name}",
+        "roster_edit_hint": "Edit names directly; numbers are assigned automatically and saved immediately.",
+        "roster_add": "Append", "roster_del": "Delete", "roster_up": "Up",
+        "roster_down": "Down", "roster_reupload": "Re-upload…",
+        "roster_save": "Save",
+        "roster_count_fmt": "{n} students",
+        "roster_reupload_title": "Re-upload roster",
+        "pick_title_pre": "Select students for long-term exclusion",
+        "pick_title_short": "Select students to exclude today",
+        "pick_search": "Search name or number…", "pick_all": "All", "pick_clear": "Clear",
+        "pick_count_fmt": "{n} selected", "unnamed": "(unnamed)",
+        "clear_long_title": "Clear long-term", "clear_short_title": "Clear today",
+        "clear_long_fmt": "Clear all long-term exclusions for this class?\n(Draw history is kept.)",
+        "clear_short_fmt": "Clear all today exclusions for this class?\n(Draw history is kept.)",
+        # ---- File picker ----
+        "fp_title": "Choose a file", "fp_choose": "Choose", "fp_up": "Parent folder",
+        "fp_hint_fmt": "Double-tap a folder to enter; tap a file then \"Choose\". Shows {suffixes} files.",
+        "fp_empty": "(empty folder)", "fp_cannot": "(cannot access this folder)",
+    },
+}
+
+
+def set_lang(code: str) -> None:
+    """切换界面语言：zh / en。"""
+    global LANG
+    LANG = code if code in _TABLE else "zh"
+
+
+def get_lang() -> str:
+    return LANG
+
+
+def t(key: str, **kwargs) -> str:
+    """取文案；缺 key 时回退中文；支持 {n} 占位。"""
+    text = _TABLE.get(LANG, _TABLE["zh"]).get(key)
+    if text is None:
+        text = _TABLE["zh"].get(key, key)
+    return text.format(**kwargs) if kwargs else text
