@@ -1144,7 +1144,7 @@ class HistoryPage(QWidget):
         if not self.store:
             return
         from .ui_dialogs import AdminPasswordDialog, HistoryCleanupDialog
-        pwd = AdminPasswordDialog(self)
+        pwd = AdminPasswordDialog(self, self.store.base_dir)
         if not pwd.exec() or not pwd.verified:
             return
         dlg = HistoryCleanupDialog(self, self.store)

@@ -1495,6 +1495,9 @@ class MaterialDialog(QDialog):
         if title:
             self.title_label = QLabel(title, self.card)
             self.title_label.setWordWrap(True)
+            # 正文内容一多，QVBoxLayout 会先压标题（QLabel 默认可压到 0 高），
+            # 表现为弹窗顶部只剩那条短横线。Minimum 表示「不许低于 sizeHint」。
+            self.title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             self.title_label.setStyleSheet(
                 f"font-size:23px; font-weight:500; color:{COLORS['on_surface']};"
                 "background:transparent;")
@@ -1575,7 +1578,11 @@ class MaterialDialog(QDialog):
         self.card.setFixedWidth(min(self._card_width, avail_w))
         self.card.setMaximumHeight(avail_h)
         body_need = self.body.sizeHint().height() + 30
-        self.scroll.setMinimumHeight(max(56, min(int(avail_h * 0.56), body_need)))
+        # 正文有多高就给多高，但不超过卡片可用高度减去标题/按钮/边距。
+        # 原来固定取 avail_h*0.56：内容一多就一律截断成半屏 + 滚动条，
+        # 底部的设置项（比如「管理员密码」）直接被滚出可视区。
+        chrome = 150
+        self.scroll.setMinimumHeight(max(56, min(body_need, int(avail_h) - chrome)))
         # 首帧先把卡片设为「入场起点」：否则 show() 到 singleShot(0) 之间
         # 会以终态完整画一帧，看起来是闪一下再缩回去弹入。
         m_prepare_entry(self.card, s=0.85, dy=38)

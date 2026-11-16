@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineE
                                QFrame, QAbstractItemView, QHeaderView, QRadioButton,
                                QDateTimeEdit)
 
-from . import app_data
+from . import app_data, security
 from .app_data import ClassStore, MODE_SIMPLE, MODE_ADVANCED, ANTI_DUP_DEFAULT_HOURS
 from .lang import t, set_lang, get_lang
 from .theme import COLORS, serif_style, standard
@@ -673,9 +673,49 @@ class AppSettingsDialog(MaterialDialog):
         self.sw_anti.toggled.connect(lambda ch: (self.spin_anti.setEnabled(ch),
                                                  m_bounce(self.spin_anti, s=0.90, dur=380)))
 
+        # ---- 管理员密码（用户自己设置，存在程序目录 admin.json） ----
+        # 标题和按钮同一行：设置弹窗本来就长，再堆四行会把底部的密码
+        # 区块挤出可视区（滚动条一出现，用户根本看不到「修改密码」）。
+        admin_head = QHBoxLayout()
+        admin_head.setSpacing(10)
+        admin_lab = QLabel(t("set_admin"), self.body)
+        admin_lab.setStyleSheet(serif_style(16, COLORS["ink"], 600) + "; background:transparent;")
+        admin_head.addWidget(admin_lab)
+        admin_head.addStretch(1)
+        self.btn_admin = make_button(t("btn_admin_set"), "tonal", min_height=44)
+        self.btn_admin.clicked.connect(self._edit_admin)
+        admin_head.addWidget(self.btn_admin)
+        self.body_lay.addLayout(admin_head)
+
+        self.admin_state = QLabel("", self.body)
+        self.admin_state.setWordWrap(True)
+        self.admin_state.setStyleSheet(
+            f"color:{COLORS['ink_faint']}; font-size:13px; background:transparent;")
+        self.body_lay.addWidget(self.admin_state)
+        self._refresh_admin_state()
+
         self.add_action(t("dlg_cancel"), role="reject", primary=False)
         save = self.add_action(t("set_save"), role="none", primary=True)
         save.clicked.connect(self._save)
+
+    # ------------------------------------------------------------------
+    def _refresh_admin_state(self):
+        configured = security.is_configured(self.store.base_dir)
+        self.admin_state.setText(t("set_admin_on") if configured else t("set_admin_unset"))
+        self.btn_admin.setText(t("btn_admin_change") if configured else t("btn_admin_set"))
+
+    def _edit_admin(self):
+        """设置 / 修改管理员密码；改完刷新这一行的状态。"""
+        if security.is_configured(self.store.base_dir):
+            dlg = AdminChangeDialog(self, self.store.base_dir)
+        else:
+            dlg = AdminPasswordDialog(self, self.store.base_dir, title=t("admin_set_title"))
+        if dlg.exec():
+            if getattr(dlg, "changed", False):
+                inform(self, t("admin_changed"))
+            elif getattr(dlg, "verified", False):
+                inform(self, t("admin_set_done"))
+            self._refresh_admin_state()
 
     def _save(self):
         """保存：语言 + 防重设置，写盘并标记 applied。"""
@@ -697,35 +737,62 @@ class AppSettingsDialog(MaterialDialog):
 
 
 # ===========================================================================
-# 管理员验证（删除记录前的密码门）
+# 管理员验证（删除记录前的密码门；首次使用时引导用户自己设置密码）
 # ===========================================================================
 
+def _make_pwd_edit(parent, placeholder: str) -> QLineEdit:
+    """统一样式的密码输入框（与设置弹窗里的输入框同高）。"""
+    edit = QLineEdit(parent)
+    edit.setEchoMode(QLineEdit.Password)
+    edit.setPlaceholderText(placeholder)
+    edit.setMinimumHeight(56)
+    edit.setMaxLength(security.MAX_LEN)
+    edit.setStyleSheet(
+        f"QLineEdit {{ font-size:17px; letter-spacing:2px; padding:0 16px;"
+        f" background:{COLORS['surface_container_lowest']};"
+        f" border:1.4px solid {COLORS['outline']};"
+        f" border-radius:12px; min-height:54px; }}"
+        f"QLineEdit:focus {{ border-color:{COLORS['primary']};"
+        f" background:{COLORS['surface_container_low']}; }}")
+    return edit
+
+
 class AdminPasswordDialog(MaterialDialog):
-    """输入管理员密码；密码为编译期固定值（security.py），不写盘。"""
+    """管理员密码门。
 
-    def __init__(self, parent, title: str | None = None, hint: str | None = None):
-        super().__init__(parent, title or t("admin_title"), card_width=440, scrim_cancel=True)
+    - 程序目录里没有 admin.json（首次使用）时，自动切换为「设置密码」形态：
+      两次输入，保存后直接通过验证，不需要用户再输一遍；
+    - 已经有密码时是验证形态：输入错误会抖动并提示。
+    """
+
+    def __init__(self, parent, base_dir, title: str | None = None, hint: str | None = None):
+        self.base_dir = base_dir
         self.verified = False
+        self.first_time = not security.is_configured(base_dir)
+        super().__init__(parent,
+                         title or (t("admin_set_title") if self.first_time else t("admin_title")),
+                         card_width=460, scrim_cancel=True)
 
-        tip = QLabel(hint or t("admin_hint"), self.body)
+        tip = QLabel(hint or (t("admin_set_hint") if self.first_time else t("admin_hint")),
+                     self.body)
         tip.setWordWrap(True)
         tip.setStyleSheet(
             f"font-size:14px; color:{COLORS['on_surface_variant']}; background:transparent;")
         self.body_lay.addWidget(tip)
 
-        self.edit = QLineEdit(self.body)
-        self.edit.setEchoMode(QLineEdit.Password)
-        self.edit.setPlaceholderText(t("admin_placeholder"))
-        self.edit.setMinimumHeight(56)
-        self.edit.setMaxLength(64)
-        self.edit.setStyleSheet(
-            f"QLineEdit {{ font-size:17px; letter-spacing:2px; padding:0 16px;"
-            f" background:{COLORS['surface_container_lowest']};"
-            f" border:1.4px solid {COLORS['outline']};"
-            f" border-radius:12px; min-height:54px; }}"
-            f"QLineEdit:focus {{ border-color:{COLORS['primary']};"
-            f" background:{COLORS['surface_container_low']}; }}")
+        self.edit = _make_pwd_edit(self.body,
+                                   t("admin_placeholder") if not self.first_time
+                                   else t("admin_new_placeholder"))
         self.body_lay.addWidget(self.edit)
+
+        self.edit2 = None
+        if self.first_time:
+            self.edit2 = _make_pwd_edit(self.body, t("admin_pwd2_placeholder"))
+            self.body_lay.addWidget(self.edit2)
+            self.edit.returnPressed.connect(lambda: self.edit2.setFocus())
+            self.edit2.returnPressed.connect(self._check)
+        else:
+            self.edit.returnPressed.connect(self._check)
 
         self.err = QLabel("", self.body)
         self.err.setStyleSheet(
@@ -733,26 +800,55 @@ class AdminPasswordDialog(MaterialDialog):
         self.err.setVisible(False)
         self.body_lay.addWidget(self.err)
 
+        if not self.first_time:
+            # 忘记密码的出口放在这里：老师想起来要密码时，打开的正是这个框。
+            forgot = QLabel(t("set_admin_forgot"), self.body)
+            forgot.setWordWrap(True)
+            forgot.setStyleSheet(
+                f"font-size:12.5px; color:{COLORS['ink_faint']}; background:transparent;")
+            self.body_lay.addWidget(forgot)
+
         self.add_action(t("dlg_cancel"), role="reject", primary=False)
-        ok = self.add_action(t("admin_ok"), role="none", primary=True)
+        ok = self.add_action(t("admin_ok_set") if self.first_time else t("admin_ok"),
+                             role="none", primary=True)
         ok.clicked.connect(self._check)
-        self.edit.returnPressed.connect(self._check)
         QTimer.singleShot(260, self.edit.setFocus)
 
+    # ------------------------------------------------------------------
+    def _fail(self, message: str, target: QLineEdit | None = None):
+        self.err.setText(message)
+        self.err.setVisible(True)
+        m_pop_in(self.err, dy=12, s=0.92, dur=420)     # 错误提示弹入
+        box = target or self.edit
+        m_bounce(box, s=0.955, dur=360)                # 输入框弹性回弹
+        m_burst(box, COLORS["error"], max_r=120, dur=560)  # 红色光环扩散
+        box.selectAll()
+        box.setFocus()
+        self._shake()
+
     def _check(self):
-        from . import security
-        if security.verify(self.edit.text()):
+        if self.first_time:
+            pwd = self.edit.text().strip()
+            again = self.edit2.text().strip() if self.edit2 else ""
+            if not security.valid_password(pwd):
+                self._fail(t("admin_short"), self.edit)
+                return
+            if pwd != again:
+                self._fail(t("admin_mismatch"), self.edit2 or self.edit)
+                return
+            if not security.set_password(self.base_dir, pwd):
+                self.err.setText(t("admin_save_fail"))
+                self.err.setVisible(True)
+                return
             self.verified = True
             self.accept()
             return
-        self.err.setText(t("admin_wrong"))
-        self.err.setVisible(True)
-        m_pop_in(self.err, dy=12, s=0.92, dur=420)     # 错误提示弹入
-        m_bounce(self.edit, s=0.955, dur=360)          # 输入框弹性回弹
-        m_burst(self.edit, COLORS["error"], max_r=120, dur=560)  # 红色光环扩散
-        self.edit.selectAll()
-        self.edit.setFocus()
-        self._shake()
+
+        if security.verify(self.base_dir, self.edit.text().strip()):
+            self.verified = True
+            self.accept()
+            return
+        self._fail(t("admin_wrong"))
 
     def _shake(self):
         """错误反馈：卡片左右轻微抖动（M3 错误态）。
@@ -761,6 +857,72 @@ class AdminPasswordDialog(MaterialDialog):
         后者会被布局重排"拽回"原位，看起来就是横向突然跳一下。
         """
         m_shake(self.card, amp=10, dur=320)
+
+
+class AdminChangeDialog(MaterialDialog):
+    """修改管理员密码：当前密码 + 新密码 + 确认（设置弹窗入口）。"""
+
+    def __init__(self, parent, base_dir):
+        super().__init__(parent, t("admin_change_title"), card_width=460, scrim_cancel=True)
+        self.base_dir = base_dir
+        self.changed = False
+
+        tip = QLabel(t("admin_change_hint"), self.body)
+        tip.setWordWrap(True)
+        tip.setStyleSheet(
+            f"font-size:14px; color:{COLORS['on_surface_variant']}; background:transparent;")
+        self.body_lay.addWidget(tip)
+
+        self.edit_old = _make_pwd_edit(self.body, t("admin_old_placeholder"))
+        self.edit_new = _make_pwd_edit(self.body, t("admin_new_pwd_ph"))
+        self.edit_new2 = _make_pwd_edit(self.body, t("admin_pwd2_placeholder"))
+        for w in (self.edit_old, self.edit_new, self.edit_new2):
+            self.body_lay.addWidget(w)
+        self.edit_old.returnPressed.connect(lambda: self.edit_new.setFocus())
+        self.edit_new.returnPressed.connect(lambda: self.edit_new2.setFocus())
+        self.edit_new2.returnPressed.connect(self._check)
+
+        self.err = QLabel("", self.body)
+        self.err.setStyleSheet(
+            f"font-size:13px; color:{COLORS['error']}; background:transparent;")
+        self.err.setVisible(False)
+        self.body_lay.addWidget(self.err)
+
+        self.add_action(t("dlg_cancel"), role="reject", primary=False)
+        ok = self.add_action(t("admin_change_ok"), role="none", primary=True)
+        ok.clicked.connect(self._check)
+        QTimer.singleShot(260, self.edit_old.setFocus)
+
+    def _fail(self, message: str, target: QLineEdit | None = None):
+        self.err.setText(message)
+        self.err.setVisible(True)
+        m_pop_in(self.err, dy=12, s=0.92, dur=420)
+        box = target or self.edit_old
+        m_bounce(box, s=0.955, dur=360)
+        m_burst(box, COLORS["error"], max_r=120, dur=560)
+        box.selectAll()
+        box.setFocus()
+        m_shake(self.card, amp=10, dur=320)
+
+    def _check(self):
+        old = self.edit_old.text().strip()
+        new = self.edit_new.text().strip()
+        again = self.edit_new2.text().strip()
+        if not security.verify(self.base_dir, old):
+            self._fail(t("admin_old_wrong"), self.edit_old)
+            return
+        if not security.valid_password(new):
+            self._fail(t("admin_short"), self.edit_new)
+            return
+        if new != again:
+            self._fail(t("admin_mismatch"), self.edit_new2)
+            return
+        if not security.set_password(self.base_dir, new):
+            self.err.setText(t("admin_save_fail"))
+            self.err.setVisible(True)
+            return
+        self.changed = True
+        self.accept()
 
 
 # ===========================================================================

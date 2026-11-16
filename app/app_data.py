@@ -20,7 +20,7 @@
     ├── exports/                   导出的记录文件
     ├── backups/                   整库备份 + 被删除记录的归档
     ├── template/template.txt      名单格式示例模板
-    └── 管理员密码不入盘（编译期哈希常量，见 security.py）
+    └── admin.json                 管理员密码（PBKDF2 摘要 + 盐，用户自设，见 security.py）
 
 性能说明（本次更新）：
 - 一次抽号对 history / current_round / anti_duplicate 三个文件只读写各一次，

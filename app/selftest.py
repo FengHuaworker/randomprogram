@@ -427,16 +427,53 @@ def _gui_tests(app, base: Path) -> None:
     ov.close_overlay()
     app.processEvents()
 
-    # 管理员密码：错误拒绝、正确通过（用临时哈希验证，不改正式常量）
+    # 管理员密码：用户自设（在临时目录里验证，不碰程序目录）
     from . import security
-    old_hash = security.ADMIN_HASH
-    security.ADMIN_HASH = security._digest("selftest-pwd")
+    pwd_root = Path(tempfile.mkdtemp(prefix="selftest_pwd_"))
     try:
-        _check("密码：错误拒绝", security.verify("wrong") is False)
-        _check("密码：正确通过", security.verify("selftest-pwd") is True)
-        _check("密码：空值拒绝", security.verify("") is False)
+        _check("密码：初始未设置", security.is_configured(pwd_root) is False)
+        _check("密码：未设置时校验拒绝", security.verify(pwd_root, "anything") is False)
+        _check("密码：过短拒绝", security.set_password(pwd_root, "123") is False)
+        _check("密码：纯空白拒绝", security.set_password(pwd_root, "      ") is False)
+        _check("密码：设置成功", security.set_password(pwd_root, "selftest-pwd") is True)
+        _check("密码：已设置", security.is_configured(pwd_root) is True)
+        _check("密码：错误拒绝", security.verify(pwd_root, "wrong") is False)
+        _check("密码：正确通过", security.verify(pwd_root, "selftest-pwd") is True)
+        _check("密码：空值拒绝", security.verify(pwd_root, "") is False)
+        _check("密码：改密需旧密码", security.change_password(pwd_root, "wrong", "new-pwd") is False)
+        _check("密码：改密成功", security.change_password(pwd_root, "selftest-pwd", "new-pwd") is True)
+        _check("密码：新密码生效", security.verify(pwd_root, "new-pwd") is True)
+        _check("密码：旧密码失效", security.verify(pwd_root, "selftest-pwd") is False)
+        _check("密码：文件不含明文", "new-pwd" not in security.path_of(pwd_root).read_text(encoding="utf-8"))
+        _check("密码：重置", security.reset(pwd_root) is True)
+        _check("密码：重置后未设置", security.is_configured(pwd_root) is False)
     finally:
-        security.ADMIN_HASH = old_hash
+        shutil.rmtree(pwd_root, ignore_errors=True)
+
+    # 密码弹窗：没设过密码时是「设置」形态，设过之后是「验证」形态
+    pwd_root2 = Path(tempfile.mkdtemp(prefix="selftest_pwd2_"))
+    try:
+        from .ui_dialogs import AdminPasswordDialog
+        d1 = AdminPasswordDialog(win, pwd_root2)
+        _check("密码弹窗：首次为设置形态",
+               d1.first_time is True and d1.edit2 is not None)
+        d1.edit.setText("2468")
+        d1.edit2.setText("2468")
+        d1._check()
+        _check("密码弹窗：设置后直接通过",
+               d1.verified is True and security.is_configured(pwd_root2))
+
+        d2 = AdminPasswordDialog(win, pwd_root2)
+        _check("密码弹窗：再次打开为验证形态",
+               d2.first_time is False and d2.edit2 is None)
+        d2.edit.setText("0000")
+        d2._check()
+        _check("密码弹窗：错误密码不通过", d2.verified is False)
+        d2.edit.setText("2468")
+        d2._check()
+        _check("密码弹窗：正确密码通过", d2.verified is True)
+    finally:
+        shutil.rmtree(pwd_root2, ignore_errors=True)
 
     # 记录区间删除：归档 + 只删区间内记录
     st_clean = mgr.get_class(mgr.create_class("记录清理班"))
