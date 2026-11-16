@@ -13,18 +13,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QDateTime, QTime, QPropertyAnimation, QPoint, QSize
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
                                QListWidget, QListWidgetItem, QStackedWidget, QWidget,
-                               QFrame, QAbstractItemView, QHeaderView, QRadioButton)
+                               QFrame, QAbstractItemView, QHeaderView, QRadioButton,
+                               QDateTimeEdit)
 
 from . import app_data
 from .app_data import ClassStore, MODE_SIMPLE, MODE_ADVANCED, ANTI_DUP_DEFAULT_HOURS
 from .lang import t, set_lang, get_lang
-from .theme import COLORS, serif_style
+from .theme import COLORS, serif_style, standard
 from .ui_widgets import (make_button, ask, inform, MaterialDialog,
-                         AppFilePickerDialog, enable_touch_scroll, SwitchControl)
+                         AppFilePickerDialog, enable_touch_scroll, SwitchControl,
+                         ChoiceChip, SegmentedControl,
+                         cross_fade, swap_text, swap_stack_page, pulse_opacity,
+                         reveal_widget, fade_in, stagger_fade_in)
+from .motion import (pop_in as m_pop_in, bounce as m_bounce,
+                     stagger as m_stagger, flip_text as m_flip,
+                     slide_switch as m_switch, burst as m_burst,
+                     animate as m_animate, shake as m_shake)
 
 
 class ClassNameDialog(MaterialDialog):
@@ -50,6 +58,7 @@ class ClassNameDialog(MaterialDialog):
         name = app_data.safe_name(self.edit.text())
         if not name or (name == "未命名班级" and not self.edit.text().strip()):
             self.edit.setFocus()
+            m_bounce(self.edit, s=0.93, dur=380)   # 弹性回弹代替无反馈
             return
         self.name = name
         self.accept()
@@ -88,8 +97,11 @@ class _OptionCard(QFrame):
             self.set_selected(not self._selected)
 
     def set_selected(self, sel: bool):
-        self._selected = sel
+        changed = self._selected != bool(sel)
+        self._selected = bool(sel)
         self._apply_style()
+        if changed:
+            m_bounce(self, s=1.05, dur=440)  # 整张卡弹性回弹，选中更有反馈
 
     def is_checked(self) -> bool:
         return self._selected
@@ -97,13 +109,13 @@ class _OptionCard(QFrame):
     def _apply_style(self):
         if self._selected:
             self.setStyleSheet(
-                'QFrame[optCard="true"] { background:#E8EDF3; border:1px solid #8BA8C7;'
-                ' border-left:5px solid #8BA8C7; border-radius:12px; }')
+                f'QFrame[optCard="true"] {{ background:{COLORS["secondary_container"]};'
+                f' border:2px solid {COLORS["primary"]}; border-radius:16px; }}')
         else:
             self.setStyleSheet(
-                'QFrame[optCard="true"] { background:#FBF8F4; border:1px solid #E3DCD2;'
-                ' border-radius:12px; }'
-                'QFrame[optCard="true"]:hover { background:#F6F1EB; }')
+                f'QFrame[optCard="true"] {{ background:{COLORS["surface_container_lowest"]};'
+                f' border:1px solid {COLORS["outline_variant"]}; border-radius:16px; }}'
+                f'QFrame[optCard="true"]:hover {{ background:{COLORS["surface_container_low"]}; }}')
 
 
 class SetupWizard(MaterialDialog):
@@ -196,10 +208,15 @@ class SetupWizard(MaterialDialog):
         self.roster_info.setStyleSheet(f"font-size:13px; color:{COLORS['green_dark']}; background:transparent;")
         v3.addWidget(self.roster_info)
         self.roster_prev = QLabel("")
+        # 预览改成「一行顿号分隔」：宋体的 lineSpacing 正好等于字号，多行中文
+        # 会一行压一行（看着像姓名互相遮挡）。单段文字自动换行就不会有行距问题。
         self.roster_prev.setWordWrap(True)
+        self.roster_prev.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.roster_prev.setMinimumHeight(62)
+        self.roster_prev.setMaximumHeight(92)
         self.roster_prev.setStyleSheet(
-            f"font-size:12px; color:{COLORS['ink_soft']}; background:{COLORS['paper_deep']};"
-            "border-radius:8px; padding:10px;")
+            f"font-size:12.5px; color:{COLORS['ink_soft']}; background:{COLORS['paper_deep']};"
+            "border-radius:8px; padding:8px 10px;")
         v3.addWidget(self.roster_prev)
         v3.addStretch(1)
         p3.setLayout(v3)
@@ -232,26 +249,37 @@ class SetupWizard(MaterialDialog):
 
     # ---------- 状态机 ----------
     def _refresh(self):
+        """步骤切换：淡出 → 换页/改文案 → 淡入（同页刷新不闪）。"""
         st = self._state
         if st == "mode":
-            self.stack.setCurrentIndex(0)
-            self.step_label.setText(t("wiz_step1"))
-            self.btn_back.setEnabled(False)
-            self.btn_next.setEnabled(True)
-            self.btn_next.setText(t("wiz_next"))
+            idx = 0
+            step = t("wiz_step1")
+            next_txt = t("wiz_next")
+            back_on, next_on = False, True
         elif st == "count":
             is_adv = self.card_advanced.is_checked()
-            self.stack.setCurrentIndex(1 if not is_adv else 2)
-            self.step_label.setText(t("wiz_step2", total=(3 if is_adv else 2)))
-            self.btn_back.setEnabled(True)
-            self.btn_next.setText(t("wiz_next"))
-            self.btn_next.setEnabled(True)
-        elif st == "roster":
-            self.stack.setCurrentIndex(3)
-            self.step_label.setText(t("wiz_step3"))
-            self.btn_back.setEnabled(True)
-            self.btn_next.setText(t("wiz_done"))
-            self.btn_next.setEnabled(bool(self._roster))
+            idx = 2 if is_adv else 1
+            step = t("wiz_step2", total=(3 if is_adv else 2))
+            next_txt = t("wiz_next")
+            back_on, next_on = True, True
+        else:  # roster
+            idx = 3
+            step = t("wiz_step3")
+            next_txt = t("wiz_done")
+            back_on, next_on = True, bool(self._roster)
+
+        def _apply_state():
+            self.stack.setCurrentIndex(idx)   # on_mid 里切页，配合侧向滑动
+            self.step_label.setText(step)
+            self.btn_back.setEnabled(back_on)
+            self.btn_next.setText(next_txt)
+            self.btn_next.setEnabled(next_on)
+
+        old_idx = self.stack.currentIndex()
+        if old_idx != idx:
+            m_switch(self.stack, _apply_state, forward=(idx > old_idx), dur=620)
+        else:
+            _apply_state()
 
     def _next(self):
         st = self._state
@@ -303,9 +331,10 @@ class SetupWizard(MaterialDialog):
             if names is None:
                 return
             self._roster = names
-            shown = "\n".join(names[:6]) + ("\n……" if len(names) > 6 else "")
-            self.roster_info.setText(t("wiz_roster_loaded", n=len(names)))
+            shown = "、".join(names[:10]) + ("……" if len(names) > 10 else "")
+            m_flip(self.roster_info, t("wiz_roster_loaded", n=len(names)))
             self.roster_prev.setText(shown)
+            m_pop_in(self.roster_prev, dy=16, s=0.94, dur=460)
             self._refresh()
 
     def _download_template(self):
@@ -358,11 +387,11 @@ class RosterEditorDialog(MaterialDialog):
         self.table.setHorizontalHeaderLabels([t("col_num"), t("col_name")])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.verticalHeader().setDefaultSectionSize(42)
+        self.table.verticalHeader().setDefaultSectionSize(46)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
-        self.table.setMinimumHeight(360)
+        self.table.setMinimumHeight(290)
         enable_touch_scroll(self.table)
         self._fill()
         self.body_lay.addWidget(self.table, 1)
@@ -402,6 +431,13 @@ class RosterEditorDialog(MaterialDialog):
             c0.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.table.setItem(i, 0, c0)
             self.table.setItem(i, 1, QTableWidgetItem(n))
+        # 重填后表格弹性淡入（构造时未显示会自动跳过，不会有多余动画）
+        m_pop_in(self.table.viewport(), dy=14, s=0.975, dur=420)
+
+    def _sync_count(self, with_fade: bool = True):
+        m_flip(self.count_label, t("roster_count_fmt", n=self.table.rowCount()))
+        if with_fade:
+            m_pop_in(self.table.viewport(), dy=8, s=0.99, dur=340)
 
     def _collect(self) -> list[str]:
         names = []
@@ -422,12 +458,16 @@ class RosterEditorDialog(MaterialDialog):
         self.table.setItem(r, 1, QTableWidgetItem(f"学生{r + 1}"))
         self.table.setCurrentCell(r, 1)
         self.table.editItem(self.table.item(r, 1))
+        self._sync_count(with_fade=False)   # 编辑态不做整表淡入，只让计数过渡
 
     def _del(self):
         rows = sorted({i.row() for i in self.table.selectedItems()}, reverse=True)
+        if not rows:
+            return
         for r in rows:
             self.table.removeRow(r)
         self._renumber()
+        self._sync_count()
 
     def _renumber(self):
         for i in range(self.table.rowCount()):
@@ -445,6 +485,7 @@ class RosterEditorDialog(MaterialDialog):
             return
         self._swap_rows(row, new)
         self.table.selectRow(new)
+        m_pop_in(self.table.viewport(), dy=8, s=0.99, dur=340)  # 行交换弹性淡入
 
     def _swap_rows(self, a: int, b: int):
         c0, c1 = self.table.item(a, 0), self.table.item(a, 1)
@@ -474,7 +515,7 @@ class RosterEditorDialog(MaterialDialog):
                 return
             self._names = names
             self._fill()
-            self.count_label.setText(t("roster_count_fmt", n=len(names)))
+            m_flip(self.count_label, t("roster_count_fmt", n=len(names)))
 
     def _save(self):
         names = self._collect()
@@ -537,21 +578,28 @@ class StudentPickDialog(MaterialDialog):
                 continue
             item = QListWidgetItem(f"{num:02d}　{name if name else t('unnamed')}")
             item.setData(Qt.UserRole, num)
+            item.setSizeHint(QSize(0, 46))
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if num in self._pre else Qt.Unchecked)
             self.listw.addItem(item)
         self._refresh_count()
+        # 搜索过滤是高频操作：动画自带重入保护，连打字不会反复闪
+        m_pop_in(self.listw.viewport(), dy=10, s=0.985, dur=360)
 
     def _refresh_count(self):
         lbl = getattr(self, "count_label", None)
         if lbl is None:
             return
-        lbl.setText(t("pick_count_fmt", n=len(self.selected())))
+        m_flip(lbl, t("pick_count_fmt", n=len(self.selected())))
 
     def _set_all(self, state):
+        # 逐项 setCheckState 会触发 N 次 itemChanged；先屏蔽，最后只刷新一次
+        self.listw.blockSignals(True)
         for i in range(self.listw.count()):
             self.listw.item(i).setCheckState(state)
+        self.listw.blockSignals(False)
         self._refresh_count()
+        m_pop_in(self.listw.viewport(), dy=12, s=0.975, dur=420)
 
     def selected(self) -> set[int]:
         out = set()
@@ -576,7 +624,7 @@ class AppSettingsDialog(MaterialDialog):
     """
 
     def __init__(self, parent, store: ClassStore, cfg: dict):
-        super().__init__(parent, t("settings_title"), card_width=480, scrim_cancel=True)
+        super().__init__(parent, t("settings_title"), card_width=540, scrim_cancel=True)
         self.store = store
         self.cfg = dict(cfg)
         self.applied = False
@@ -585,45 +633,45 @@ class AppSettingsDialog(MaterialDialog):
         lang_lab = QLabel(t("set_lang"), self.body)
         lang_lab.setStyleSheet(serif_style(16, COLORS["ink"], 600) + "; background:transparent;")
         self.body_lay.addWidget(lang_lab)
-        lang_row = QHBoxLayout()
-        self.rb_zh = QRadioButton(t("lang_zh"), self.body)
-        self.rb_en = QRadioButton(t("lang_en"), self.body)
-        self.rb_zh.setChecked(get_lang() == "zh")
-        self.rb_en.setChecked(get_lang() == "en")
-        lang_row.addWidget(self.rb_zh)
-        lang_row.addWidget(self.rb_en)
-        lang_row.addStretch(1)
-        self.body_lay.addLayout(lang_row)
+        self.seg_lang = SegmentedControl([t("lang_zh"), t("lang_en")],
+                                         0 if get_lang() == "zh" else 1)
+        self.body_lay.addWidget(self.seg_lang, 0, Qt.AlignLeft)
 
         # ---- 引导模式入口 ----
         mode_lab = QLabel(t("set_mode"), self.body)
         mode_lab.setStyleSheet(serif_style(16, COLORS["ink"], 600) + "; background:transparent;")
         self.body_lay.addWidget(mode_lab)
-        self.btn_wizard = make_button(t("run_wizard"), "ghost", min_height=44)
+        self.btn_wizard = make_button(t("run_wizard"), "tonal", min_height=44)
         self.btn_wizard.clicked.connect(self._run_wizard)
-        self.body_lay.addWidget(self.btn_wizard)
+        self.body_lay.addWidget(self.btn_wizard, 0, Qt.AlignLeft)
 
         # ---- 防重设置 ----
         anti_lab = QLabel(t("set_anti"), self.body)
         anti_lab.setStyleSheet(serif_style(16, COLORS["ink"], 600) + "; background:transparent;")
         self.body_lay.addWidget(anti_lab)
-        anti_row = QHBoxLayout()
+        # 说明文字单独占一整行：放在开关那一行里会被挤成三行，最后一行
+        # 还会被行高裁掉一半（看着像「文字被控件压住」）。
         self.sw_anti = SwitchControl(bool(cfg.get("anti_dup_enabled", True)))
         self.spin_anti = QSpinBox(self.body)
         self.spin_anti.setRange(app_data.ANTI_DUP_MIN_HOURS, app_data.ANTI_DUP_MAX_HOURS)
         self.spin_anti.setValue(int(cfg.get("anti_dup_hours", 24)))
         self.spin_anti.setSuffix(" " + t("unit_hours"))
-        self.spin_anti.setMinimumHeight(44)
+        # 跟着 QSS 的输入框最小高度（52）走：压到 44 会把上下内边距吃掉，
+        # 文字贴着框顶、下方只剩一条 1px 底线，看着像被裁过。
+        self.spin_anti.setMinimumHeight(52)
         self.spin_anti.setEnabled(self.sw_anti.isChecked())
         antial = QLabel(t("anti_label"), self.body)
         antial.setWordWrap(True)
         antial.setStyleSheet(f"color:{COLORS['ink']}; font-size:14px; background:transparent;")
-        anti_row.addWidget(antial, 1)
+        self.body_lay.addWidget(antial)
+        anti_row = QHBoxLayout()
+        anti_row.addStretch(1)
         anti_row.addWidget(self.spin_anti)
         anti_row.addSpacing(10)
         anti_row.addWidget(self.sw_anti)
         self.body_lay.addLayout(anti_row)
-        self.sw_anti.toggled.connect(lambda ch: self.spin_anti.setEnabled(ch))
+        self.sw_anti.toggled.connect(lambda ch: (self.spin_anti.setEnabled(ch),
+                                                 m_bounce(self.spin_anti, s=0.90, dur=380)))
 
         self.add_action(t("dlg_cancel"), role="reject", primary=False)
         save = self.add_action(t("set_save"), role="none", primary=True)
@@ -631,7 +679,7 @@ class AppSettingsDialog(MaterialDialog):
 
     def _save(self):
         """保存：语言 + 防重设置，写盘并标记 applied。"""
-        set_lang("en" if self.rb_en.isChecked() else "zh")
+        set_lang("en" if self.seg_lang.currentIndex() == 1 else "zh")
         cfg = self.store.load_config()
         cfg["anti_dup_enabled"] = self.sw_anti.isChecked()
         cfg["anti_dup_hours"] = self.spin_anti.value()
@@ -646,3 +694,240 @@ class AppSettingsDialog(MaterialDialog):
         if wiz.exec():
             self.cfg = self.store.load_config()
             self.applied = True
+
+
+# ===========================================================================
+# 管理员验证（删除记录前的密码门）
+# ===========================================================================
+
+class AdminPasswordDialog(MaterialDialog):
+    """输入管理员密码；密码为编译期固定值（security.py），不写盘。"""
+
+    def __init__(self, parent, title: str | None = None, hint: str | None = None):
+        super().__init__(parent, title or t("admin_title"), card_width=440, scrim_cancel=True)
+        self.verified = False
+
+        tip = QLabel(hint or t("admin_hint"), self.body)
+        tip.setWordWrap(True)
+        tip.setStyleSheet(
+            f"font-size:14px; color:{COLORS['on_surface_variant']}; background:transparent;")
+        self.body_lay.addWidget(tip)
+
+        self.edit = QLineEdit(self.body)
+        self.edit.setEchoMode(QLineEdit.Password)
+        self.edit.setPlaceholderText(t("admin_placeholder"))
+        self.edit.setMinimumHeight(56)
+        self.edit.setMaxLength(64)
+        self.edit.setStyleSheet(
+            f"QLineEdit {{ font-size:17px; letter-spacing:2px; padding:0 16px;"
+            f" background:{COLORS['surface_container_lowest']};"
+            f" border:1.4px solid {COLORS['outline']};"
+            f" border-radius:12px; min-height:54px; }}"
+            f"QLineEdit:focus {{ border-color:{COLORS['primary']};"
+            f" background:{COLORS['surface_container_low']}; }}")
+        self.body_lay.addWidget(self.edit)
+
+        self.err = QLabel("", self.body)
+        self.err.setStyleSheet(
+            f"font-size:13px; color:{COLORS['error']}; background:transparent;")
+        self.err.setVisible(False)
+        self.body_lay.addWidget(self.err)
+
+        self.add_action(t("dlg_cancel"), role="reject", primary=False)
+        ok = self.add_action(t("admin_ok"), role="none", primary=True)
+        ok.clicked.connect(self._check)
+        self.edit.returnPressed.connect(self._check)
+        QTimer.singleShot(260, self.edit.setFocus)
+
+    def _check(self):
+        from . import security
+        if security.verify(self.edit.text()):
+            self.verified = True
+            self.accept()
+            return
+        self.err.setText(t("admin_wrong"))
+        self.err.setVisible(True)
+        m_pop_in(self.err, dy=12, s=0.92, dur=420)     # 错误提示弹入
+        m_bounce(self.edit, s=0.955, dur=360)          # 输入框弹性回弹
+        m_burst(self.edit, COLORS["error"], max_r=120, dur=560)  # 红色光环扩散
+        self.edit.selectAll()
+        self.edit.setFocus()
+        self._shake()
+
+    def _shake(self):
+        """错误反馈：卡片左右轻微抖动（M3 错误态）。
+
+        走 MotionEffect 的 dx（像素位移），不再动画化布局管理的 pos——
+        后者会被布局重排"拽回"原位，看起来就是横向突然跳一下。
+        """
+        m_shake(self.card, amp=10, dur=320)
+
+
+# ===========================================================================
+# 记录清理：按时间段删除（先归档，再移除）
+# ===========================================================================
+
+class HistoryCleanupDialog(MaterialDialog):
+    """选择时间范围 → 预览条数 → 归档删除。所有控件按触摸大屏设计（>=48px）。"""
+
+    def __init__(self, parent, store: ClassStore):
+        super().__init__(parent, t("clean_title"), card_width=640, scrim_cancel=True)
+        self.store = store
+        self.deleted_count = 0
+        self.archive_path = None
+        self._preset = "today"
+
+        bounds = store.history_bounds()
+        self._bounds = bounds
+        total = len(store.history())
+
+        info = QLabel(f"该班级共 {total} 条记录" +
+                      (f" · {bounds[0][:10]} ~ {bounds[1][:10]}" if bounds else ""), self.body)
+        info.setStyleSheet(
+            f"font-size:13px; color:{COLORS['on_surface_variant']}; background:transparent;")
+        self.body_lay.addWidget(info)
+
+        range_lab = QLabel(t("clean_range"), self.body)
+        range_lab.setStyleSheet(
+            f"font-size:15px; font-weight:600; color:{COLORS['on_surface']}; background:transparent;")
+        self.body_lay.addWidget(range_lab)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(8)
+        self.chips = {}
+        for key, label in (("today", t("clean_today")), ("7d", t("clean_7d")),
+                           ("30d", t("clean_30d")), ("all", t("clean_all")),
+                           ("custom", t("clean_custom"))):
+            c = ChoiceChip(label, checked=(key == "today"), parent=self.body)
+            c.clicked.connect(lambda _=False, k=key: self._use_preset(k))
+            self.chips[key] = c
+            chips.addWidget(c)
+        chips.addStretch(1)
+        self.body_lay.addLayout(chips)
+
+        grid = QHBoxLayout()
+        grid.setSpacing(12)
+        col1 = QVBoxLayout()
+        col1.setSpacing(6)
+        l1 = QLabel(t("clean_start"), self.body)
+        l1.setStyleSheet(f"font-size:12.5px; color:{COLORS['on_surface_variant']}; background:transparent;")
+        self.dt_start = QDateTimeEdit(self.body)
+        self.dt_start.setDisplayFormat("yyyy-MM-dd  HH:mm:ss")
+        self.dt_start.setButtonSymbols(QDateTimeEdit.NoButtons)
+        self.dt_start.setCalendarPopup(True)
+        self.dt_start.setMinimumHeight(52)
+        self.dt_start.setMinimumWidth(240)
+        col1.addWidget(l1)
+        col1.addWidget(self.dt_start)
+
+        col2 = QVBoxLayout()
+        col2.setSpacing(6)
+        l2 = QLabel(t("clean_end"), self.body)
+        l2.setStyleSheet(f"font-size:12.5px; color:{COLORS['on_surface_variant']}; background:transparent;")
+        self.dt_end = QDateTimeEdit(self.body)
+        self.dt_end.setDisplayFormat("yyyy-MM-dd  HH:mm:ss")
+        self.dt_end.setButtonSymbols(QDateTimeEdit.NoButtons)
+        self.dt_end.setCalendarPopup(True)
+        self.dt_end.setMinimumHeight(52)
+        self.dt_end.setMinimumWidth(240)
+        col2.addWidget(l2)
+        col2.addWidget(self.dt_end)
+
+        grid.addLayout(col1, 1)
+        grid.addLayout(col2, 1)
+        self.body_lay.addLayout(grid)
+
+        self.preview = QLabel("", self.body)
+        self.preview.setWordWrap(True)
+        self.preview.setStyleSheet(
+            f"font-size:15px; font-weight:500; color:{COLORS['vermilion']};"
+            f" background:{COLORS['vermilion_soft']}; border-radius:8px; padding:12px 16px;")
+        self.body_lay.addWidget(self.preview)
+
+        warn = QLabel(t("clean_warn"), self.body)
+        warn.setWordWrap(True)
+        warn.setStyleSheet(
+            f"font-size:12.5px; color:{COLORS['on_surface_variant']}; background:transparent;")
+        self.body_lay.addWidget(warn)
+
+        self.add_action(t("dlg_cancel"), role="reject", primary=False)
+        self.btn_delete = make_button(t("clean_btn"), "error", min_height=48)
+        self.btn_delete.clicked.connect(self._do_delete)
+        self.action_lay.addWidget(self.btn_delete)
+
+        self.dt_start.dateTimeChanged.connect(lambda _: self._on_custom())
+        self.dt_end.dateTimeChanged.connect(lambda _: self._on_custom())
+        self._use_preset("today")
+
+    # ------------------------------------------------------------ 区间
+    def _use_preset(self, key: str):
+        self._preset = key
+        for k, c in self.chips.items():
+            c.setChecked(k == key)
+        now = QDateTime.currentDateTime()
+        if key == "today":
+            start = QDateTime(now.date(), QTime(0, 0, 0))
+            end = QDateTime(now.date(), QTime(23, 59, 59))
+        elif key == "7d":
+            start = QDateTime(now.date().addDays(-6), QTime(0, 0, 0))
+            end = QDateTime(now.date(), QTime(23, 59, 59))
+        elif key == "30d":
+            start = QDateTime(now.date().addDays(-29), QTime(0, 0, 0))
+            end = QDateTime(now.date(), QTime(23, 59, 59))
+        elif key == "all" and self._bounds:
+            start = QDateTime.fromString(self._bounds[0], "yyyy-MM-dd HH:mm:ss")
+            end = QDateTime.fromString(self._bounds[1], "yyyy-MM-dd HH:mm:ss")
+        else:
+            return self._update_preview()
+        for w, v in ((self.dt_start, start), (self.dt_end, end)):
+            w.blockSignals(True)
+            w.setDateTime(v)
+            w.blockSignals(False)
+        self._update_preview()
+
+    def _on_custom(self):
+        self._preset = "custom"
+        for k, c in self.chips.items():
+            c.setChecked(k == "custom")
+        self._update_preview()
+
+    def _range(self) -> tuple[str, str]:
+        return (self.dt_start.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+                self.dt_end.dateTime().toString("yyyy-MM-dd HH:mm:ss"))
+
+    def _update_preview(self):
+        start, end = self._range()
+        total = len(self.store.history())
+        if start > end:
+            text, enabled = t("clean_invalid"), False
+        else:
+            n = self.store.count_history_range(start, end)
+            if n <= 0:
+                text, enabled = t("clean_preview_none"), False
+            else:
+                text, enabled = t("clean_preview_fmt", n=n, total=total), True
+        m_flip(self.preview, text)   # 预览文案翻转切换；相同文案不闪
+        if self.btn_delete.isEnabled() != enabled:
+            self.btn_delete.setEnabled(enabled)
+            m_bounce(self.btn_delete, s=0.90, dur=360)
+
+    # ------------------------------------------------------------ 删除
+    def _do_delete(self):
+        start, end = self._range()
+        if start > end:
+            inform(self, t("clean_title"), t("clean_invalid"), warn=True)
+            return
+        n = self.store.count_history_range(start, end)
+        if n <= 0:
+            return
+        if not ask(self, t("clean_title"), t("clean_confirm_fmt", n=n, start=start, end=end),
+                   yes=t("clean_btn"), no=t("dlg_cancel")):
+            return
+        try:
+            count, path = self.store.delete_history_range(start, end)
+        except Exception:
+            inform(self, t("clean_title"), t("clean_fail"), warn=True)
+            return
+        self.deleted_count = count
+        self.archive_path = path
+        self.accept()

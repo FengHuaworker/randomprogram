@@ -1,0 +1,38 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# ---- PyInstaller 构建产物 ----
+build/
+dist/
+*.manifest
+
+# ---- 运行时数据（软件在 exe 同级自动生成，不入库） ----
+classes/
+exports/
+backups/
+last_class.txt
+_crash.txt
+_actions.log
+
+# ---- 本地发布产物（exe 走 GitHub Releases，不进 git） ----
+发布版/
+*.exe
+
+# ---- 开发期截图 / 字体缓存 ----
+ui_preview/
+tools/_shots/
+tools/qtfonts/
+
+# ---- 遗留旧素材 ----
+Randomer.zip
+
+# ---- 系统 ----
+Thumbs.db
+.DS_Store
+desktop.ini

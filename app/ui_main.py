@@ -1,86 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-主窗口：顶栏（标题 + 班级切换 + 班级管理 + 模式徽章 + 设置）、
-Material 3 底部导航（动画指示器）、背景有机色块、快捷键系统：
-- 空格 = 开始 / 停止抽号（QShortcut 全局，不受焦点按钮影响）
-- R = 重置本轮　E = 导出记录　ESC = 关闭弹窗　← / → = 切换班级
+主窗口：M3 顶栏（标题 + 班级切换 + 班级管理 + 模式徽章 + 设置）、
+底部导航（动画指示器）、快捷键：
+- 空格 = 开始 / 停止抽号
+- B = 批量抽号　R = 重置本轮　E = 导出记录　ESC = 关闭弹窗　← / → = 切换班级
 「设置」打开应用内设置弹窗（语言 / 引导模式 / 防重；即时生效）。
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QPointF, QRectF, QTimer
-from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen, QShortcut, QKeySequence
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                               QComboBox, QLabel, QLineEdit, QSpinBox, QStackedWidget)
+                               QComboBox, QLabel, QLineEdit, QSpinBox, QStackedWidget, QMenu, QFrame)
 
 from . import app_data
+from .motion import page_enter as m_page_enter
 from .app_data import ClassManager, ClassStore, MODE_ADVANCED
-from .theme import COLORS, serif_style, paper_texture
-from .lang import t, set_lang, get_lang
-from .ui_widgets import (make_button, ask, inform, Badge, fade_slide_in, fade_in,
-                         NavBar, snack)
+from .theme import COLORS
+from .lang import t, set_lang
+from .ui_widgets import (make_button, ask, inform, Badge,
+                         NavBar, snack, enable_touch_view, hairline, IconButton, IconGlyph)
 from .ui_pages import DrawPage, HistoryPage, StatsPage, ConfigPage, ShieldPage
 from .ui_dialogs import ClassNameDialog, SetupWizard, AppSettingsDialog
-
-
-class BgCanvas(QWidget):
-    """
-    有机背景画布：米白底色 + 低透明莫兰迪色块（倾斜椭圆 / 圆角方块）
-    + 全局纸纹噪点 + 顶栏下方的手绘波浪线。全部极其克制（低透明度）。
-    """
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        r = self.rect()
-        w, h = float(r.width()), float(r.height())
-
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(COLORS["cream"]))
-        p.drawRect(r)
-
-        def blob(cx, cy, bw, bh, rot, color, alpha):
-            p.save()
-            p.translate(cx, cy)
-            p.rotate(rot)
-            c = QColor(color)
-            c.setAlpha(alpha)
-            p.setBrush(c)
-            p.drawEllipse(QRectF(-bw / 2, -bh / 2, bw, bh))
-            p.restore()
-
-        blob(w * 0.86, h * 0.10, 540, 360, -10, COLORS["blue_soft"], 64)
-        blob(w * 0.05, h * 0.46, 420, 300, 16, COLORS["green_soft"], 55)
-        p.save()
-        p.translate(w * 0.93, h * 0.62)
-        p.rotate(14)
-        c = QColor(COLORS["camel_soft"])
-        c.setAlpha(58)
-        p.setBrush(c)
-        p.drawRoundedRect(QRectF(-110, -150, 220, 300), 30, 30)
-        p.restore()
-        blob(w * 0.10, h * 0.90, 190, 150, -6, "#EFDFDD", 70)
-
-        # 手绘波浪线（标题下方；驼色）
-        p.save()
-        pen = QPen(QColor(COLORS["camel"]), 1.8, Qt.SolidLine, Qt.RoundCap)
-        p.setPen(pen)
-        path = QPainterPath()
-        x0, y0, amp = 26.0, 62.0, 4.5
-        path.moveTo(x0, y0)
-        step = 12.0
-        for k in range(11):
-            path.quadTo(x0 + step * (k + 0.5), y0 + (amp if k % 2 == 0 else -amp),
-                        x0 + step * (k + 1), y0)
-        p.drawPath(path)
-        p.restore()
-
-        # 全局纸纹噪点（低存在感）
-        p.setOpacity(0.5)
-        p.drawTiledPixmap(r, paper_texture())
-        p.setOpacity(1.0)
-        p.end()
 
 
 class MainWindow(QMainWindow):
@@ -97,45 +39,68 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI
     def _build(self):
-        central = BgCanvas()
+        central = QWidget()
+        central.setObjectName("RootSurface")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ---------- 顶栏 ----------
+        # ---------- M3 top app bar ----------
         topbar = QWidget()
         topbar.setObjectName("TopBar")
-        topbar.setFixedHeight(70)
+        topbar.setFixedHeight(64)
         tb = QHBoxLayout(topbar)
-        tb.setContentsMargins(24, 8, 14, 6)
+        tb.setContentsMargins(24, 0, 16, 0)
         tb.setSpacing(10)
 
-        titlebox = QVBoxLayout()
-        titlebox.setSpacing(0)
         self.title_lab = QLabel(t("app_title"))
         self.title_lab.setObjectName("AppTitle")
-        titlebox.addWidget(self.title_lab)
-        # 注解行：拉丁字距排（两种语言一致，不作为语言翻译项）
-        self.caption_lab = QLabel("L U C K Y   D R A W")
-        self.caption_lab.setObjectName("AppCaption")
-        titlebox.addWidget(self.caption_lab)
-        tb.addLayout(titlebox)
-
+        tb.addWidget(self.title_lab)
+        self.caption_lab = QLabel("LUCKY DRAW")
+        self.caption_lab.setStyleSheet(
+            f"color:{COLORS['outline']}; font-size:9px; letter-spacing:3px;"
+            "background:transparent;")
+        tb.addSpacing(8)
+        tb.addWidget(self.caption_lab, 0, Qt.AlignVCenter)
         tb.addSpacing(14)
 
+        # 班级选择：M3 圆角容器 + 下拉 + 折叠箭头
+        self.class_chip = QFrame()
+        self.class_chip.setObjectName("ClassChip")
+        self.class_chip.setFixedHeight(40)
+        cc = QHBoxLayout(self.class_chip)
+        cc.setContentsMargins(14, 0, 10, 0)
+        cc.setSpacing(8)
+        self.class_cap = QLabel(t("class_label"))
+        self.class_cap.setStyleSheet(
+            f"color:{COLORS['on_surface_variant']}; font-size:12px; background:transparent;")
+        cc.addWidget(self.class_cap)
         self.class_combo = QComboBox()
-        self.class_combo.setMinimumWidth(190)
-        self.class_combo.setMinimumHeight(44)
-        self.class_combo.setToolTip(t("btn_settings"))
-        tb.addWidget(self.class_combo)
+        self.class_combo.setMinimumWidth(150)
+        self.class_combo.setFixedHeight(36)
+        self.class_combo.setFocusPolicy(Qt.NoFocus)
+        self.class_combo.setObjectName("ClassCombo")
+        cc.addWidget(self.class_combo)
+        self.class_arrow = IconGlyph("chevron_down", 16, COLORS["on_surface_variant"])
+        cc.addWidget(self.class_arrow)
+        tb.addWidget(self.class_chip)
 
-        self.btn_new = make_button(t("btn_new_class"), "ghost", min_height=44)
-        self.btn_rename = make_button(t("btn_rename_class"), "ghost", min_height=44)
-        self.btn_delete = make_button(t("btn_delete_class"), "ghost", min_height=44)
-        tb.addWidget(self.btn_new)
-        tb.addWidget(self.btn_rename)
-        tb.addWidget(self.btn_delete)
+        # 班级管理：统一收进“更多”菜单（窄屏也不挤）
+        self.btn_new = make_button(t("btn_new_class"), "text", min_height=40)
+        self.btn_rename = make_button(t("btn_rename_class"), "text", min_height=40)
+        self.btn_delete = make_button(t("btn_delete_class"), "text", min_height=40)
+        for b in (self.btn_new, self.btn_rename, self.btn_delete):
+            b.hide()
+
+        self.btn_more = IconButton("more", self, 40, t("btn_class_menu"))
+        self.menu_more = QMenu(self)
+        self.menu_more.addAction(t("btn_new_class"), self._create_class)
+        self.menu_more.addAction(t("btn_rename_class"), self._rename_class)
+        self.menu_more.addAction(t("btn_delete_class"), self._delete_class)
+        self.btn_more.clicked.connect(
+            lambda: self.menu_more.exec(self.btn_more.mapToGlobal(self.btn_more.rect().bottomRight())))
+        tb.addWidget(self.btn_more)
 
         tb.addStretch(1)
 
@@ -143,13 +108,12 @@ class MainWindow(QMainWindow):
         self.mode_badge.setObjectName("ModeBadge")
         tb.addWidget(self.mode_badge)
 
-        self.btn_setup = make_button(t("btn_settings"), "ghost", min_height=44)
-        self.btn_setup.setToolTip(t("btn_settings"))
+        self.btn_setup = IconButton("tune", self, 44, t("btn_settings"))
         tb.addWidget(self.btn_setup)
 
         root.addWidget(topbar)
 
-        # ---------- 页面栈 + M3 底部导航 ----------
+        # ---------- 页面栈 + 底部导航 ----------
         self.stack = QStackedWidget()
         self.draw_page = DrawPage()
         self.history_page = HistoryPage()
@@ -167,17 +131,17 @@ class MainWindow(QMainWindow):
         ])
         root.addWidget(self.nav)
 
-        # 快捷键：QShortcut 在按键分发给焦点控件之前处理（不受按钮焦点影响）
+        # 快捷键
         self.shortcut_space = QShortcut(QKeySequence(Qt.Key_Space), self)
         self.shortcut_space.setAutoRepeat(False)
         self.shortcut_space.setContext(Qt.WindowShortcut)
         self.shortcut_space.activated.connect(self._shortcut_toggle)
-        self.shortcut_r = QShortcut(QKeySequence("R"), self)
-        self.shortcut_r.setContext(Qt.WindowShortcut)
-        self.shortcut_r.activated.connect(self._shortcut_reset)
-        self.shortcut_e = QShortcut(QKeySequence("E"), self)
-        self.shortcut_e.setContext(Qt.WindowShortcut)
-        self.shortcut_e.activated.connect(self._shortcut_export)
+        for key, slot in (("R", self._shortcut_reset), ("E", self._shortcut_export),
+                          ("B", self._shortcut_batch)):
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.WindowShortcut)
+            sc.activated.connect(slot)
+            setattr(self, f"shortcut_{key.lower()}", sc)
 
     def _bind(self):
         self.class_combo.currentIndexChanged.connect(self._on_class_changed)
@@ -188,30 +152,56 @@ class MainWindow(QMainWindow):
         self.nav.changed.connect(self._on_nav_changed)
         self.config_page.on_reconfigure = self._reconfigure
         self.config_page.settings_changed.connect(self._on_settings_changed)
+        self.history_page.history_changed.connect(self._on_history_changed)
+        try:
+            enable_touch_view(self.class_combo.view())
+        except Exception:
+            pass
 
     # ------------------------------------------------------------- 快捷键
+    def _typing(self) -> bool:
+        f = self.focusWidget()
+        return isinstance(f, (QLineEdit, QSpinBox))
+
     def _shortcut_toggle(self):
+        if self._typing():
+            return
         if self.stack.currentWidget() is self.draw_page:
             self.draw_page.toggle()
 
     def _shortcut_reset(self):
+        if self._typing():
+            return
         if self.stack.currentWidget() is self.draw_page:
             self.draw_page._reset_round()
 
     def _shortcut_export(self):
+        if self._typing():
+            return
         if self.stack.currentWidget() is self.draw_page:
             self.draw_page._export()
 
+    def _shortcut_batch(self):
+        if self._typing():
+            return
+        if self.stack.currentWidget() is self.draw_page:
+            self.draw_page.batch_draw()
+
     # ------------------------------------------------------------- 启动
     def startup(self):
-        """启动流程（按 6.8）：目录/模板/默认班级 → 备份恢复 → 引导向导。"""
         self.manager.ensure_dirs()
         self.manager.ensure_template()
         first = self.manager.ensure_default_class()
-
         last = self._load_last_class()
-        name = last if last in self.manager.list_classes() else first
-
+        # 只认带 config.json 的班级：classes/ 里混进的无配置目录（backups /
+        # template 等）如果按名字排到最前，会让程序启动即弹「首次使用向导」。
+        usable = self.manager.usable_classes() or self.manager.list_classes()
+        if last in usable:
+            name = last
+        elif first in usable:
+            name = first
+        else:
+            name = usable[0] if usable else first
         self._reload_class(name, allow_wizard=True)
 
     def _load_last_class(self) -> str:
@@ -268,8 +258,8 @@ class MainWindow(QMainWindow):
         if not self.store:
             return
         mode = self.cfg.get("mode", app_data.MODE_SIMPLE)
-        self.mode_badge.setText(t("badge_advanced") if mode == MODE_ADVANCED
-                                else t("badge_simple"))
+        self.mode_badge.setText("· " + (t("badge_advanced") if mode == MODE_ADVANCED
+                                        else t("badge_simple")))
         self.draw_page.set_store(self.store, self.cfg)
         self.history_page.set_store(self.store)
         self.stats_page.set_store(self.store)
@@ -277,13 +267,12 @@ class MainWindow(QMainWindow):
         self.shield_page.set_store(self.store, self.cfg)
 
     def _on_settings_changed(self):
-        """防重等设置变更后的联动：重新读取配置并刷新摇号池等页面（不播入场动画）。"""
         if not self.store:
             return
         self.cfg = self.store.load_config()
         mode = self.cfg.get("mode", app_data.MODE_SIMPLE)
-        self.mode_badge.setText(t("badge_advanced") if mode == MODE_ADVANCED
-                                else t("badge_simple"))
+        self.mode_badge.setText("· " + (t("badge_advanced") if mode == MODE_ADVANCED
+                                        else t("badge_simple")))
         self.draw_page.cfg = self.cfg
         self.draw_page.refresh()
         self.history_page.refresh()
@@ -292,6 +281,14 @@ class MainWindow(QMainWindow):
         self.config_page.cfg = self.cfg
         self.config_page.refresh()
 
+    def _on_history_changed(self):
+        """记录被删除后：统计、配置、抽号页同步刷新（历史是统计的数据源）。"""
+        if not self.store:
+            return
+        self.stats_page.refresh()
+        self.config_page.refresh()
+        self.draw_page.refresh()
+
     def _refresh_page(self, index: int):
         pages = [self.draw_page, self.history_page, self.stats_page,
                  self.config_page, self.shield_page]
@@ -299,14 +296,24 @@ class MainWindow(QMainWindow):
             pages[index].refresh()
 
     def _on_nav_changed(self, index: int):
-        self.stack.setCurrentIndex(index)
+        # 顺序很重要：先刷新目标页内容，再切换，最后才动效。
+        # 先切后刷新会让页面带着旧内容画出一帧再跳变。
         self._refresh_page(index)
-        pages = [self.draw_page, self.history_page, self.stats_page,
-                 self.config_page, self.shield_page]
-        if 0 <= index < len(pages) and self.isVisible():
-            fade_in(pages[index], dur=260, delay=30)
+        self.stack.setCurrentIndex(index)
+        page = self.stack.currentWidget()
+        if self.isVisible() and page is not None:
+            # 整页只做一个动作：上浮 8px + 淡入 200ms，零延迟、不缩放。
+            # 旧实现是「三张卡片各差 80ms 缩到 0.975 再飘进来」——大块错落
+            # 像 PPT 逐条出现，而且 delay=80 会先以全亮渲染一帧再突然消失，
+            # 看上去就是一闪 + 糊上来；缩放还会让大数字在移动中重采样发虚。
+            m_page_enter(page)
+        # 导航栏图标微缩放脉冲
+        try:
+            self.nav._pulse_icon(index)
+        except Exception:
+            pass
 
-    # ------------------------------------------------------ 班级管理操作
+    # ------------------------------------------------------ 班级管理
     def _create_class(self):
         dlg = ClassNameDialog(self, t("dlg_title_new"), "", t("info_classname_hint"))
         if not dlg.exec():
@@ -337,14 +344,17 @@ class MainWindow(QMainWindow):
             return
         name = self.store.name
         if not ask(self, t("dlg_title_new"),
-                   t("confirm_delete_class_fmt", name=name),
-                   yes=t("dlg_delete")):
+                   t("confirm_delete_class_fmt", name=name), yes=t("dlg_delete")):
             return
         if not ask(self, t("dlg_title_new"),
                    t("confirm_delete_class2_fmt", name=name),
                    yes=t("dlg_still"), no=t("dlg_back")):
             return
-        self.manager.delete_class(name)
+        try:
+            self.manager.delete_class(name)
+        except OSError as e:
+            inform(self, t("dlg_delete"), str(e), warn=True)
+            return
         names = self.manager.list_classes()
         if not names:
             self.manager.create_class("默认班级")
@@ -353,7 +363,6 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------ 设置 / 向导
     def _open_settings(self):
-        """应用内设置弹窗：语言 / 引导模式入口 / 防重。"""
         dlg = AppSettingsDialog(self, self.store, self.cfg)
         if dlg.exec() and dlg.applied:
             self._on_settings_changed()
@@ -376,28 +385,29 @@ class MainWindow(QMainWindow):
             return True
         return False
 
-    # ------------------------------------------------------ 语言切换
+    # ------------------------------------------------------ 语言
     def apply_lang(self, code: str | None = None):
-        """应用界面语言（即时生效）：顶栏 / 导航 / 各页面文案。"""
         if code:
             set_lang(code)
         self.setWindowTitle(t("app_title"))
         self.title_lab.setText(t("app_title"))
-        self.caption_lab.setText("L U C K Y   D R A W")   # 注解行不随语言翻译
         self.btn_new.setText(t("btn_new_class"))
         self.btn_rename.setText(t("btn_rename_class"))
         self.btn_delete.setText(t("btn_delete_class"))
-        self.btn_setup.setText(t("btn_settings"))
+        self.btn_setup.setToolTip(t("btn_settings"))
+        self.class_cap.setText(t("class_label"))
+        acts = self.menu_more.actions()
+        for act, key in zip(acts, ("btn_new_class", "btn_rename_class", "btn_delete_class")):
+            act.setText(t(key))
         self.nav.setLabels([t("nav_draw"), t("nav_history"), t("nav_stats"),
                             t("nav_config"), t("nav_shield")])
         for pg in (self.draw_page, self.history_page, self.stats_page,
                    self.config_page, self.shield_page):
             getattr(pg, "retranslate", lambda: None)()
         self._refresh_all()
-        # 避免重播入场动画：直接刷新数据
         self.draw_page.refresh()
 
-    # ------------------------------------------------------------- 快捷键（方向键）
+    # ------------------------------------------------------------- 键盘
     def keyPressEvent(self, event):
         focus = self.focusWidget()
         if isinstance(focus, (QLineEdit, QSpinBox)):
@@ -434,16 +444,40 @@ class MainWindow(QMainWindow):
         self._reload_class(name)
 
     # -------------------------------------------------------------- 动画
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._responsive()
+
+    def _update_scale(self):
+        dp = self.draw_page
+        if hasattr(dp, '_apply_num_size') and dp.num_label.text():
+            dp._apply_num_size(len(dp.num_label.text()))
+        # 内容跟随缩放
+        dp = self.draw_page
+        if hasattr(dp, '_stretch_grid'):
+            dp._stretch_grid()
+        if hasattr(dp, '_scale_empty_state'):
+            dp._scale_empty_state()
+        if hasattr(dp, '_apply_num_size') and dp.num_label.text():
+            dp._apply_num_size(len(dp.num_label.text()))
+
+    def _responsive(self):
+        """窄屏折叠：任何缩放下顶栏都不互相挤压。"""
+        w = self.width()
+        self.class_cap.setVisible(w >= 820)
+        self.class_chip.setMinimumWidth(150 if w < 820 else 210)
+        self.mode_badge.setVisible(w >= 700)
+
     def showEvent(self, event):
         super().showEvent(event)
+        self._responsive()
         if not getattr(self, "_entrance_done", False):
             self._entrance_done = True
-            topbar = self.centralWidget().findChild(QWidget, "TopBar")
-            if topbar:
-                fade_slide_in(topbar, dx=0, dy=-14, dur=420, delay=150)
-            fade_slide_in(self.nav, dx=0, dy=18, dur=460, delay=320)
+            # 启动入场：内容区整体上浮一次即可（顶栏/导航属外壳，瞬时出现
+            # 更自然）。showEvent 在首帧绘制之前，零延迟不会产生「先亮后暗」。
+            m_page_enter(self.draw_page, dur=300, dy=12)
 
-    # -------------------------------------------------------------- 关闭
     def closeEvent(self, event):
-        self.draw_page.stop_silent()   # 所有数据已在抽号时即时落盘
+        self.draw_page.stop_silent()
+        app_data.flush()          # 关闭前把后台写盘队列清空，保证不丢最后一笔记录
         super().closeEvent(event)

@@ -1,90 +1,158 @@
-# 随机抽号软件（源码 + 打包）
+# 随机抽号 · 课堂随机点名
 
-Windows 桌面随机抽号软件：多班级管理、简易/高级引导模式、抽号动画、
-屏蔽（长期/短期）、防重号、抽号记录、概率统计、配置展示、名单编辑、
-导出 TXT、配置自动备份恢复。莫兰迪色系 + 手账文具质感，触控友好（≥44px）。
-全部数据保存在软件所在目录，不写注册表 / AppData / ProgramData（C 盘还原兼容）。
+面向课堂的 Windows 桌面抽号工具。多班级独立管理，翻号动画 + 弹性定格，支持批量抽号、
+屏蔽名单、防重号、抽号记录与概率统计。界面为 Material Design 3 风格（宋体 · 1px 描边卡片 ·
+克制光效），触控目标 ≥ 44px，可直接用触摸屏操作。
 
-## 目录结构
+**数据全部保存在软件所在目录**，不写注册表、不写 `AppData` / `ProgramData`，
+适合机房、教室等会还原 C 盘的环境。
 
-```
-random-picker/
-├── main.py                 # 启动入口（开发：python main.py；打包：PyInstaller 入口）
-├── app/                    # 应用包
-│   ├── main.py             # QApplication 初始化、壳层
-│   ├── app_data.py         # 数据层（班级管理/JSON原子落盘/备份恢复/防重/屏蔽/统计/导出）
-│   ├── theme.py            # 莫兰迪主题：QSS、纸纹纹理、阴影工具、字体自适应
-│   ├── ui_widgets.py       # 自定义控件：纸纹卡片/弹性缩放标签/光晕/徽章/消息框
-│   ├── ui_dialogs.py       # 弹窗：班级名、配置向导、名单编辑器、学生多选
-│   ├── ui_pages.py         # 页面：抽号/记录/统计/配置/屏蔽管理
-│   ├── ui_main.py          # 主窗口：顶栏 + Tab + 快捷键
-│   └── selftest.py         # 内置自检（--selftest）
-├── tests/test_data.py      # 数据层回归测试（无 Qt 依赖）
-├── tools/                  # 开发工具（不打进 exe）
-│   ├── preview.py          # offscreen 界面截图预览
-│   ├── make_icon.py        # 生成 assets/app_icon.ico
-│   └── patch_tables.py     # 一次性小补丁脚本
-├── assets/app_icon.ico
-├── 使用说明.md             # 面向用户
-└── dist/随机抽号.exe       # 打包产物（rebuild 生成）
-```
+![抽号页](docs/img/main_draw.png)
 
-## 开发运行
+## 下载
+
+到 [Releases](../../releases) 下载 `随机抽号_Motion.exe`，双击即可运行，无需安装、无需 Python 环境。
+
+> 单文件打包，首次启动会有 1～3 秒解包时间。若系统提示「未知发布者」，是未做代码签名所致，
+> 点「更多信息 → 仍要运行」即可。
+
+## 功能
+
+- **多班级**：每个班级独立的名单、屏蔽、防重状态、抽号记录，互不干扰；班级可新建、重命名、删除。
+- **两种模式**：简易模式只抽号码；高级模式同时显示姓名，名单可导入、编辑、增删。
+- **抽号**：翻号动画 → 弹性定格 → 自动记录；点击卡片或 `空格` 开始/停止，`R` 重置本轮。
+- **批量抽号**：一次抽 N 人（1～10），错峰浮入展示。
+- **屏蔽**：长期屏蔽（一直不抽）、短期屏蔽（按天自动解除）、冷却（刚抽过的人短期内不再出现）。
+- **防重号**：默认 24 小时窗口，可关闭、可改窗口时长、可一键重置（清空本轮，保留历史）。
+- **记录**：按轮次查看已抽名单，支持删除单条、导出 TXT（含班级、时间、总条数、表格对齐）。
+- **统计**：按抽中次数排名，占比列是自绘进度条（按最高者归一，人少时也不会变成一排小圆点）。
+- **配置展示**：一屏看清当前班级的全部状态（模式、人数、摇号池、屏蔽名单、防重、数据路径）。
+- **安全**：设置/配置修改需要管理员密码；密码只存 SHA-256 摘要，不落盘、不留明文。
+- **中英双语**：界面可即时切换，无需重启。
+- **可靠性**：`config.json` 损坏自动用 `.bak` 恢复；两者都坏则引导重新配置，不静默丢数据。
+
+## 界面
+
+| 记录 | 统计 |
+|---|---|
+| ![记录页](docs/img/history.png) | ![统计页](docs/img/stats.png) |
+
+| 配置展示 | 屏蔽管理 |
+|---|---|
+| ![配置页](docs/img/config.png) | ![屏蔽页](docs/img/shield.png) |
+
+以上截图由 `tools/make_screenshots.py` 用虚构名单（王小明、李小华……）自动生成。
+
+## 运行与开发
+
+环境：Windows 10/11 + Python 3.9+。
 
 ```powershell
-python main.py                # 正常启动
-python main.py --selftest     # 内置自检（数据层+GUI 冒烟，退出码 0=通过）
-python tools/preview.py       # 生成 ui_preview/*.png 界面预览
-python tests/test_data.py     # 数据层回归测试
+pip install PySide6
+
+python main.py                # 启动
+python main.py --selftest     # 内置自检：数据层 + GUI 冒烟，退出码 0 = 通过
+python tests/test_data.py     # 数据层回归测试（不依赖 Qt）
+python tools/preview.py       # offscreen 渲染各页面截图到 ui_preview/
+python tools/make_screenshots.py  # 生成 README 用截图到 docs/img/
 ```
 
 ## 打包
 
 ```powershell
-python -m PyInstaller --noconfirm --onefile --noconsole --clean `
-  --icon assets/app_icon.ico `
-  --add-data "assets/app_icon.ico;assets" `
-  --add-data "assets/fonts;assets/fonts" `
-  --name 随机抽号 main.py
+python -m PyInstaller --noconfirm 随机抽号.spec          # 稳定版 → dist/随机抽号.exe
+python -m PyInstaller --noconfirm 随机抽号_极致版.spec    # 动效版 → dist/随机抽号_极致动效版.exe
 ```
 
-产物：`dist/随机抽号.exe`，双击即用。`assets/fonts/`（Playfair Display / DM Sans，OFL 协议）随包分发，程序启动时自动注册，缺失时回退系统字体。验证：
+两个 spec 共用同一份源码，区别只在产物名与 `hiddenimports`。打完务必在**独立空目录**里验证：
 
 ```powershell
-copy dist\随机抽号.exe "D:\某个临时目录\"   # 放到独立目录测试
-.\随机抽号.exe --selftest ; echo $LASTEXITCODE   # 应为 0
+copy dist\随机抽号_极致动效版.exe "D:\tmp-test\"
+cd D:\tmp-test
+.\随机抽号_极致动效版.exe --selftest
+echo $LASTEXITCODE      # 0 = 通过
 ```
 
-## 触屏适配要点
+## 目录结构
 
-- 交互控件触控目标 ≥ 44×44px（按钮 48px+），窗口最大化默认；
-- 所有列表/表格/滚动区启用 `QScroller`（`enable_touch_scroll`）：单指拖动滚动 + 惯性，鼠标拖拽同样可用（LeftMouseButtonGesture 统一手势）；
-- 按压反馈 = 水波涟漪 + QSS 下沉；悬停动效（抬升阴影/下划线/高光位移）仅作补充，触屏退化为纯按压反馈；
-- 应用内自绘弹窗（MaterialDialog）：遮罩、ESC、点遮罩均可关闭，触屏滚动列表。
+```
+random-picker/
+├── main.py                     # 入口（PyInstaller 入口脚本，含崩溃日志钩子）
+├── app/
+│   ├── main.py                 # QApplication 初始化、单实例、壳层
+│   ├── app_data.py             # 数据层：班级/JSON 原子落盘/备份恢复/防重/屏蔽/统计/导出
+│   ├── theme.py                # M3 主题：HCT 色板、type scale、动效曲线、QSS
+│   ├── motion.py               # 动画引擎：cubic-bezier LUT、弹性缩放、交错入场
+│   ├── ui_widgets.py           # 自绘控件：卡片/按钮/开关/导航栏/弹窗/文件选择器
+│   ├── ui_pages.py             # 页面：抽号/记录/统计/配置/屏蔽
+│   ├── ui_dialogs.py           # 弹窗：班级名/配置向导/名单编辑/设置
+│   ├── ui_main.py              # 主窗口：顶栏 + 导航 + 快捷键
+│   ├── lang.py                 # 中英文案表
+│   ├── security.py             # 管理员密码（编译期摘要，不落盘）
+│   └── selftest.py             # 内置自检
+├── tests/test_data.py          # 数据层回归测试
+├── tools/                      # 开发工具（不打进 exe）
+│   ├── preview.py              # offscreen 界面预览
+│   ├── make_screenshots.py     # 生成 README 截图
+│   ├── shot_live.py            # 抓真实窗口（PrintWindow，不依赖桌面合成）
+│   ├── film_live.py            # PostMessage 点击 + 逐帧抓图，量动画位移
+│   ├── audit_overlap.py        # 控件遮挡审计
+│   └── probes/                 # 一次性排查脚本（阴影/像素/布局/性能）
+├── assets/app_icon.ico
+├── assets/fonts/               # 备用字体（OFL）
+├── design/DESIGN.md            # 设计说明
+├── docs/img/                   # README 截图
+├── 随机抽号.spec / 随机抽号_极致版.spec
+└── 使用说明.md                  # 面向使用者的完整说明
+```
 
-## 设计语言（莫兰迪 · 杂志感 · 手工感 · 丝滑动效）
+## 数据存放
 
-- 主色雾霾蓝灰蓝系 + 暖灰/米白/浅驼辅助；无荧光色/高饱和蓝/紫蓝渐变；
-- 标题衬线（Playfair Display 打包附带）、正文无衬线（DM Sans 打包附带 / 微软雅黑回退），字号层级拉开；
-- 手工感：顶栏手绘波浪线、弹窗偏移装饰双线、背景有机色块（倾斜椭圆/圆角方块）、纸纹噪点；
-- 动效：`theme.bezier()` 实现 cubic-bezier LUT（Qt 无原生贝塞尔），统一 ease-out 0.3~0.6s；启动为圆形呼吸标识（SplashWindow）后优雅消隐；弹窗遮罩淡入 + 卡片轻弹入；内容滚入视口渐现上移（配置页 + 视差色块）。
+程序**只在 exe 同级目录**读写，首次启动自动创建：
 
-## 验证 exe 不写 C 盘
+```
+随机抽号.exe 所在目录/
+├── classes/<班级名>/config.json     # 班级配置
+├── classes/<班级名>/roster.txt      # 名单（高级模式）
+├── classes/<班级名>/history.json    # 抽号记录
+├── backups/<班级名>_<时间>/         # 删除班级时归档
+├── exports/                         # 导出的 TXT
+├── template/template.txt            # 名单导入模板
+└── last_class.txt                   # 上次打开的班级
+```
 
-放入全新文件夹运行 `随机抽号.exe --selftest`（或直接双击启动），
-确认 `classes/`、`exports/`、`backups/`、`template/` 都生成在
-**exe 同级目录**；`last_class.txt` 同理。程序内不写入任何 C 盘路径。
+换机器时整目录拷走即可，不需要迁移数据库。
 
-## 测试覆盖（对应需求第六节用例）
+## 设计要点
 
-- 创建 3 个班级、每个班级独立数据（名单/屏蔽/防重/历史互不干扰）
-- 名单上传（UTF-8/GBK）、名单编辑增删改、重新上传
-- 抽号：开始/停止动画、定格即记录、本轮已抽、摇号池缩量
-- 屏蔽：长期/短期（含次日自动解除）
-- 防重：默认 24h 窗口生效、可关闭、可重置；重置清空本轮、保留历史
-- 导出 TXT 格式（含班级/导出时间/总条数/表格对齐）
-- 重启软件数据恢复（新进程重新加载）
-- config.json 损坏 → .bak 自动恢复；双缺失 → 标记 needs_setup 引导重配
-- 历史损坏 → 改名保留不删除
-- 班级重命名（文件夹改名）/ 删除（归档 backups）
-- 非法字符清洗、路径穿越防护
+- **色板**：以雾霾蓝 `#8BA8C7` 为种子，经 HCT 色调板生成 primary / secondary / tertiary /
+  neutral 全套 M3 角色（P40 主色、P90 容器、neutral 98/96/94/92 五级 surface）。
+- **卡片**：统一「白底 + 1px 描边（`#DCE1EB`）」。不做投影 —— 试用过三套阴影方案
+  （位图模糊 / 内置烘焙 / `QGraphicsDropShadowEffect`），在 DPI 缩放、动画缩放、弹窗叠加下
+  都会出现灰块、错位或被裁切，最后选择描边：任何缩放下都稳定，也更接近纸面质感。
+- **动效**：`theme.bezier()` 生成 cubic-bezier LUT 驱动逐帧插值；翻号瞬时切换、定格用轻回弹；
+  页面切换只做「上浮 8px + 200ms 淡入」，不做逐卡错峰（块状错落像 PPT，且中途会重采样发虚）。
+- **自绘优先**：导航指示器、进度条、开关、开关的滑块、占比条都是 `paintEvent` 画出来的，
+  没有 `setCellWidget` 堆控件 —— 表格每行塞 3 个控件在高频刷新下会泄漏残留控件，
+  表现为表格左上角出现固定的「鬼影」。
+- **字体**：全站宋体，按 M3 type scale 分级（display / headline / title / body / label）。
+
+## 更新日志
+
+### v1.0.0（2026-11-16）
+
+首个正式版本。
+
+- 抽号页：翻号动画 + 弹性定格 + 落定光环，批量抽号 1～10 人错峰浮入。
+- 班级：多班级独立数据、重命名、删除归档、首次启动向导（简易 / 高级模式）。
+- 名单：TXT 导入（UTF-8 / GBK）、内置编辑器增删改与排序、模板导出。
+- 屏蔽：长期 / 短期（次日自动解除）/ 冷却三种状态，摇号池实时统计。
+- 防重：24 小时窗口可配、可关闭、可重置本轮。
+- 记录与统计：轮次视图、删除单条、导出 TXT；统计页自绘占比条。
+- 修复：弹窗定位按父窗口客户区对齐（原先含标题栏，整体上移半个标题栏）；
+  统计表「鬼影」；配置页文字互相压盖；名单编辑弹窗底部按钮被裁。
+- 界面统一为白底 + 1px 描边，移除全部投影。
+
+## 说明
+
+本项目为课堂教学场景自制工具，代码与截图中的名单均为虚构。转载或二次分发请先联系作者。

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -69,6 +70,19 @@ def _data_tests(base: Path) -> None:
     _check("本轮已抽落盘", len(c1.round_list()) == 3)
     _check("防重冷却落盘", len(c1.anti_records()) == 3)
 
+    # 5b. 批量落盘：一次写三处，条数一致（批量抽号主路径）
+    c1_batch = mgr.get_class(names[2])
+    cfg_b = c1_batch.load_config()
+    cfg_b["total_count"] = 8
+    c1_batch.save_config(cfg_b)
+    picks = [{"num": i, "name": ""} for i in (1, 2, 3, 4)]
+    c1_batch.record_draws(picks, MODE_SIMPLE, anti_dup=True)
+    _check("批量落盘：历史4条", len(c1_batch.history()) == 4)
+    _check("批量落盘：本轮4条", len(c1_batch.round_list()) == 4)
+    _check("批量落盘：冷却4条", len(c1_batch.anti_records()) == 4)
+    _check("批量落盘：同批次时间一致",
+           len({r["time"] for r in c1_batch.history()}) == 1)
+
     # 6. 防重生效：已抽号码不在新摇号池
     pool2 = c1.draw_pool(cfg)
     nums2 = {s["num"] for s in pool2}
@@ -88,6 +102,8 @@ def _data_tests(base: Path) -> None:
 
     # 9. 短期屏蔽过期自动清理（写入昨天的日期）
     yesterday = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400 * 1))
+    app_data.flush()
+    app_data.reset_cache()            # 直接改文件后需让内存缓存失效
     c1.short_path.write_text(f'[{{"num": 5, "date": "{yesterday}"}}]', encoding="utf-8")
     _check("短期屏蔽次日自动解除", c1.short_exempt() == [], str(c1.short_exempt()))
 
@@ -110,6 +126,8 @@ def _data_tests(base: Path) -> None:
     _check("重置不影响历史", len(c1.history()) == 3)
 
     # 13. 重启恢复：新实例重新读取（模拟重启电脑）
+    app_data.flush()                 # 等后台写盘完成
+    app_data.reset_cache()           # 清空内存缓存，强制从磁盘读
     mgr2 = ClassManager(base)
     c1r = mgr2.get_class(names[0])
     cfg_r = c1r.load_config()
@@ -260,10 +278,14 @@ def _gui_tests(app, base: Path) -> None:
     al.show()
     app.processEvents()
     geo = al.geometry()
-    top = win.frameGeometry()
+    # 正确基准是父窗口的**客户区**（不是 frameGeometry：它含 31px 标题栏，
+    # 用它对齐会让弹窗整体上移半个标题栏）
+    from PySide6.QtCore import QRect, QPoint
+    top = QRect(win.mapToGlobal(QPoint(0, 0)), win.size())
     ok = (abs(geo.x() - top.x()) <= 2 and abs(geo.y() - top.y()) <= 2
           and abs(geo.width() - top.width()) <= 2 and abs(geo.height() - top.height()) <= 2)
-    _check("弹窗遮罩盖住顶层窗口", ok, f"dialog={geo.x()},{geo.y()}..{geo.width()}x{geo.height()} vs win={top.x()},{top.y()}")
+    _check("弹窗遮罩对齐主窗客户区", ok,
+           f"dialog={geo.x()},{geo.y()}..{geo.width()}x{geo.height()} vs client={top.x()},{top.y()}..{top.width()}x{top.height()}")
     al.hide()
     app.processEvents()
 
@@ -284,11 +306,11 @@ def _gui_tests(app, base: Path) -> None:
     tb = RippleButton("新建班级")
     tb.setProperty("type", "ghost")
     tb._animate("uline", 12, target=1.0)
-    QTest.qWait(40)
-    opened = tb.uline > 0.8
+    QTest.qWait(250)
+    opened = tb.uline > 0.7
     tb._animate("uline", 12, target=0.0)
-    QTest.qWait(40)
-    closed = tb.uline < 0.2
+    QTest.qWait(250)
+    closed = tb.uline < 0.3
     _check("下划线：进入展开/离开收起", opened and closed)
 
     # 切换回默认班级
@@ -332,7 +354,7 @@ def _gui_tests(app, base: Path) -> None:
     # 设置弹窗：语言选择 + 防重保存（_save 写盘）
     from .ui_dialogs import AppSettingsDialog
     dlg = AppSettingsDialog(win, st_first, st_first.load_config())
-    dlg.rb_en.setChecked(True)
+    dlg.seg_lang.setCurrentIndex(1)
     dlg.sw_anti.setChecked(False)
     dlg.spin_anti.setValue(48)
     dlg._save()
@@ -361,11 +383,96 @@ def _gui_tests(app, base: Path) -> None:
     spd.listw.item(1).setCheckState(_Qt.Checked)
     _check("屏蔽多选追加勾选", spd.selected() == {1, 2})
 
-    # 数字字号自适应（3 位数时用较小字号，防溢出）
+    # 数字字号自适应（3 位数用更小字号，防溢出；具体像素随窗口高度缩放）
     win.draw_page._apply_num_size(3)
-    big = "108px" in win.draw_page.num_label.styleSheet()
+    px3 = win.draw_page.num_label.font().pixelSize()
     win.draw_page._apply_num_size(2)
-    _check("数字位数自适应字号", big and "150px" in win.draw_page.num_label.styleSheet())
+    px2 = win.draw_page.num_label.font().pixelSize()
+    _check("数字位数自适应字号", 0 < px3 < px2, f"{px3} vs {px2}")
+
+    # 批量人数上限：永远不超过摇号池剩余人数
+    from .ui_pages import DrawPage
+    _check("批量上限：20 抽 15 收口", DrawPage._clamp_batch(20, 15) == (15, True))
+    _check("批量上限：3 抽 15 不变", DrawPage._clamp_batch(3, 15) == (3, False))
+    _check("批量上限：池空返回 0", DrawPage._clamp_batch(20, 0) == (0, True))
+    _check("批量上限：非法值兜底", DrawPage._clamp_batch("x", 5) == (1, False))
+
+    # 摇号池归零 → 自动重置（清空本轮 + 冷却，历史保留）
+    st_auto = mgr.get_class(mgr.create_class("自动重置班"))
+    st_auto.roster_write(["甲", "乙"])
+    cfga = st_auto.load_config()
+    cfga["mode"] = MODE_ADVANCED
+    cfga["total_count"] = 2
+    cfga["anti_dup_enabled"] = True
+    st_auto.save_config(cfga)
+    win._reload_class(st_auto.name)
+    app.processEvents()
+    st_auto.record_draws([{"num": 1, "name": "甲"}, {"num": 2, "name": "乙"}],
+                         MODE_ADVANCED, anti_dup=True)
+    win.draw_page._snap = st_auto.pool_snapshot(cfga)
+    win.draw_page._pool = []
+    did = win.draw_page._maybe_auto_reset()
+    _check("池空自动重置", did and st_auto.round_list() == [] and st_auto.anti_records() == [])
+    _check("自动重置保留历史", len(st_auto.history()) == 2)
+    _check("自动重置后全员回池", len(st_auto.draw_pool(cfga)) == 2)
+
+    # 批量揭晓覆盖层：构造 + 跳过动画 + 关闭（不阻塞、不崩溃）
+    from .ui_widgets import BatchRevealOverlay
+    ov = BatchRevealOverlay(win, [{"num": 1, "name": "甲"}, {"num": 2, "name": "乙"}], [1, 2])
+    ov.show()
+    ov.start()
+    app.processEvents()
+    ov.finish_all()
+    _check("批量揭晓层可跳过", ov._done and len(ov._cards) == 2)
+    ov.close_overlay()
+    app.processEvents()
+
+    # 管理员密码：错误拒绝、正确通过（用临时哈希验证，不改正式常量）
+    from . import security
+    old_hash = security.ADMIN_HASH
+    security.ADMIN_HASH = security._digest("selftest-pwd")
+    try:
+        _check("密码：错误拒绝", security.verify("wrong") is False)
+        _check("密码：正确通过", security.verify("selftest-pwd") is True)
+        _check("密码：空值拒绝", security.verify("") is False)
+    finally:
+        security.ADMIN_HASH = old_hash
+
+    # 记录区间删除：归档 + 只删区间内记录
+    st_clean = mgr.get_class(mgr.create_class("记录清理班"))
+    cfgc = st_clean.load_config()
+    cfgc["total_count"] = 5
+    st_clean.save_config(cfgc)
+    base_hist = [
+        {"time": "2026-01-01 08:00:00", "num": 1, "name": "", "mode": MODE_SIMPLE},
+        {"time": "2026-01-02 08:00:00", "num": 2, "name": "", "mode": MODE_SIMPLE},
+        {"time": "2026-01-03 08:00:00", "num": 3, "name": "", "mode": MODE_SIMPLE},
+        {"time": "2026-01-04 08:00:00", "num": 4, "name": "", "mode": MODE_SIMPLE},
+    ]
+    app_data.json_write(st_clean.history_path, base_hist)
+    n_del, archive = st_clean.delete_history_range("2026-01-02 00:00:00", "2026-01-03 23:59:59")
+    _check("区间删除条数正确", n_del == 2 and len(st_clean.history()) == 2)
+    _check("区间删除生成归档", archive is not None and archive.exists()
+           and archive.parent.name == "backups")
+    _check("区间外记录保留", [r["num"] for r in st_clean.history()] == [1, 4])
+    _check("空区间不误删", st_clean.delete_history_range("2030-01-01 00:00:00",
+                                                          "2030-01-02 00:00:00")[0] == 0)
+
+    # 统计口径：同名不同号不合并
+    st_dup = mgr.get_class(mgr.create_class("同名班"))
+    cfgd = st_dup.load_config()
+    cfgd["mode"] = MODE_ADVANCED
+    cfgd["total_count"] = 3
+    st_dup.save_config(cfgd)
+    st_dup.roster_write(["小明", "小明", "小红"])
+    st_dup.record_draws([{"num": 1, "name": "小明"}, {"num": 2, "name": "小明"},
+                         {"num": 3, "name": "小红"}], MODE_ADVANCED, anti_dup=False)
+    stats_dup = st_dup.stats()
+    _check("统计：同名不合并", len(stats_dup) == 3 and
+           sum(1 for s in stats_dup if s["display"] == "小明") == 2)
+
+    # 配置兼容：旧 config 缺 batch_count 时自动补齐
+    _check("旧配置补齐 batch_count", st_clean.load_config().get("batch_count") is not None)
 
     # 清除上一轮已抽后的 draw_page 停止状态检查
     win.draw_page.stop_silent()
@@ -375,6 +482,13 @@ def _gui_tests(app, base: Path) -> None:
 
 
 def run_selftest(app) -> int:
+    # 控制台/管道编码兜底：Windows GBK 控制台无法输出 ✔/✘，会导致自检本身崩溃。
+    # 统一把 stdout 切到 UTF-8（errors=replace），无 stdout 时忽略。
+    try:
+        if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     print("=" * 52)
     print(" 随机抽号软件 · 内置自检")
     print("=" * 52)

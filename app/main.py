@@ -12,6 +12,35 @@ DPI 说明：Qt6 在 Windows 上默认启用 Per-Monitor V2 高 DPI 感知，
 
 import os
 import sys
+import traceback
+
+
+def _crash_path() -> str:
+    """崩溃日志固定写到可执行文件/源码根目录（不随工作目录漂移）。"""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "_crash.txt")
+
+
+def _log_crash():
+    """崩溃日志写到 exe 同目录，console=False 也能看到。"""
+    path = _crash_path()
+
+    def _hook(exc_type, exc_val, exc_tb):
+        try:
+            with open(path, 'a', encoding='utf-8') as f:
+                traceback.print_exception(exc_type, exc_val, exc_tb, file=f)
+        except Exception:
+            pass
+    sys.excepthook = _hook
+
+    import faulthandler
+    try:
+        faulthandler.enable(open(path, 'w'))
+    except Exception:
+        pass
 
 
 def _window_icon():
@@ -36,7 +65,16 @@ def _asset_root() -> str:
     return str(Path(__file__).resolve().parent.parent)
 
 
+# 顶层窗口的强引用表。PySide6 的 QWidget 若失去全部 Python 引用，包装对象被
+# GC 时会连 C++ 窗口一起销毁 → 窗口无故闪退；残留的 QTimer/动画再访问已销毁
+# 对象即段错误（faulthandler 也未必来得及落盘）。此前 _boot() 里 win 只是局部
+# 变量，boot 一返回就满足 GC 条件——这就是反复“闪退/崩了”但日志全空的根因。
+_APP_WINDOWS: list = []
+
+
 def main() -> int:
+    _log_crash()          # 一进来就挂崩溃钩子（此前漏调用，崩了无迹可查）
+
     if "--selftest" in sys.argv:
         # 自检不需要显示器（打包后的 exe 也可在无人值守下验证）
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -75,11 +113,13 @@ def main() -> int:
 
     # —— 启动标识：莫兰迪圆形呼吸，随后优雅消隐 ——
     splash = SplashWindow()
+    _APP_WINDOWS.append(splash)               # 强引用，防 GC 闪退
     splash.show_breath()
     app.processEvents()
 
     def _boot():
         win = MainWindow(ClassManager())
+        _APP_WINDOWS.append(win)              # 强引用到进程结束（关键）
         if icon:
             win.setWindowIcon(icon)
         win.showMaximized()

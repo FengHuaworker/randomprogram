@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-页面层：抽号主界面 / 抽号记录 / 概率统计 / 配置展示 / 屏蔽管理。
-每个页面通过 set_store(store) 切换班级并 refresh() 刷新数据。
+页面层 v2「朱墨」：
+- 抽号页：编辑式版面（细线分区，无卡片堆叠），滚轮数字 + 落章定格，
+  批量抽号纸票盖章，池空自动重置横幅；
+- 记录页：管理员密码 → 按时间段归档删除；
+- 统计 / 配置 / 屏蔽：同一套排版语言（大字标题 + 细线行）。
+响应式：>=900 双栏，<900 单栏可滚动；高度不足时自动缩小大数字。
 """
 
 from __future__ import annotations
@@ -9,298 +13,730 @@ from __future__ import annotations
 import random
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QPoint, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import (Qt, QTimer, QRectF, QPoint, QPointF, Signal, QSize,
+                            Property, QVariantAnimation, QPropertyAnimation,
+                            QEasingCurve)
+from PySide6.QtGui import (QColor, QMouseEvent, QPainter, QFont, QPen, QBrush,
+                           QLinearGradient, QRadialGradient)
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                               QListWidget, QTableWidget, QTableWidgetItem,
-                               QScrollArea, QGridLayout, QProgressBar, QFrame,
-                               QAbstractItemView, QHeaderView)
+                               QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
+                               QScrollArea, QGridLayout, QFrame,
+                               QAbstractItemView, QHeaderView, QSizePolicy, QSpacerItem)
 
 from . import app_data
+from .motion import (pop_in as m_pop_in, bounce as m_bounce,
+                     stagger as m_stagger,
+                     animate as m_animate)
 from .app_data import ClassStore, MODE_ADVANCED, MODE_SIMPLE
 from .lang import t
-from .theme import COLORS, serif_style, FONT_SERIF
-from .ui_widgets import (PaperCard, make_button, ZoomLabel, Halo, Badge, elastic_zoom,
-                         start_halo, stop_halo, flash_halo, tick_pulse, ask, inform,
-                         DotDivider, fade_slide_in, fade_in, flash_item_background,
-                         animate_progress, enable_touch_scroll, snack, SwitchControl)
+from .theme import (COLORS, serif_style, MOTION, display_font,
+                    emphasized_decelerate, type_style)
+from .ui_widgets import (RollLabel, SealMark, StampRing, Halo, Badge,
+                         start_halo, stop_halo, flash_halo, make_button, ask, inform,
+                         fade_in, fade_slide_in, snack, SwitchControl, NumberStepper, ChoiceChip,
+                         Banner, BatchRevealOverlay, enable_touch_scroll,
+                         flash_item_background, hairline, PaperCard,
+                         glow_pixmap, IconGlyph, PctBarDelegate, WrapLabel)
 
 
-# ===========================================================================
-# 背景装饰色块（有机形状，供视差/氛围使用）
-# ===========================================================================
+def _page_kicker(num: str) -> QLabel:
+    """杂志式章节号：小字、大字距、accent 色。"""
+    lab = QLabel(num)
+    lab.setStyleSheet(
+        f"color:{COLORS['accent']}; font-size:12px; font-weight:600;"
+        "letter-spacing:2px; background:transparent;")
+    return lab
 
-class _Blob(QWidget):
-    """低透明有机色块：椭圆或大圆角矩形，可旋转（手工感装饰）。"""
 
-    def __init__(self, color: str, alpha: int, w: float, h: float, rot: float = 0.0,
-                 shape: str = "ellipse", parent=None):
+def _section_title(text: str) -> QWidget:
+    """M3 区块标题：title large + 600 字重，不加装饰线。"""
+    w = QWidget()
+    v = QVBoxLayout(w)
+    v.setContentsMargins(0, 0, 0, 0)
+    v.setSpacing(2)
+    lab = QLabel(text)
+    lab.setStyleSheet(
+        f"color:{COLORS['on_surface']}; font-size:21px; font-weight:600;"
+        "background:transparent;")
+    v.addWidget(lab)
+    return w
+
+
+def _soft_gap(n: int) -> QSpacerItem:
+    """可压缩的垂直间隙：空间充足时为 n，不足时可压到 0（防小窗元素互相重叠）。"""
+    return QSpacerItem(0, n, QSizePolicy.Minimum, QSizePolicy.Maximum)
+
+
+class ResultStage(QWidget):
+    """抽号舞台：干净留白，数字与姓名直接落在卡片上；不再画圆盘/光晕。
+
+    落定光环直接画在本控件里（fire_halo）：旧实现用 BurstOverlay 半透明
+    子窗覆盖在窗口上，会强制整窗走 alpha 合成，定格瞬间整窗反复重绘——
+    实测出现单帧 173ms 冻结；改为舞台自身 paintEvent 画扩散环后，只重绘
+    舞台区域，整窗不再被拖累。
+    """
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(int(w), int(h))
-        self._c = QColor(color)
-        self._c.setAlpha(alpha)
-        self._rot = rot
-        self._shape = shape
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._wm = True
+        self._running = False
+        self._halo = 0.0            # 光环进度 0→1（0 = 关闭）
+        self._halo_color = QColor(COLORS["primary"])
+        self._halo_max_r = 190.0
+
+    def set_watermark(self, on: bool):
+        self._wm = bool(on)
+
+    def set_running(self, on: bool):
+        self._running = bool(on)
+
+    def disc_rect(self) -> QRectF:
+        # 兼容旧调用（光晕/光环已移除）
+        return QRectF(self.rect())
+
+    # ---- 落定光环（舞台内绘制，不产生额外窗口层） ----
+    def get_halo(self):
+        return self._halo
+
+    def set_halo(self, v):
+        self._halo = float(v)
+        self.update()
+
+    halo = Property(float, get_halo, set_halo)
+
+    def fire_halo(self, color: str, max_r: float = 190, dur: int = 760):
+        """从舞台中心扩散两圈主色光环，透明度回收后自动关闭。"""
+        self._halo_color = QColor(color)
+        self._halo_max_r = float(max_r)
+        a = getattr(self, "_halo_anim", None)
+        if a is not None:
+            try:
+                a.stop()
+            except Exception:
+                pass
+        anim = QPropertyAnimation(self, b"halo", self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(max(120, int(dur)))
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(self._halo_done)
+        anim.start()
+        self._halo_anim = anim
+
+    def _halo_done(self):
+        self._halo = 0.0
+        self.update()
 
     def paintEvent(self, event):
+        if self._halo <= 0.001:
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.translate(self.width() / 2, self.height() / 2)
-        p.rotate(self._rot)
-        p.setPen(Qt.NoPen)
-        p.setBrush(self._c)
-        r = QRectF(-self.width() / 2, -self.height() / 2, self.width(), self.height())
-        if self._shape == "ellipse":
-            p.drawEllipse(r)
-        else:
-            p.drawRoundedRect(r, 26, 26)
+        c = QPointF(self.width() / 2.0, self.height() / 2.0)
+        base = min(self.width(), self.height()) * 0.16
+        t = max(0.0, min(1.0, self._halo))
+        # ① 中心闪光：落定瞬间一下打亮，200ms 内迅速收掉（冲击感来源）
+        flash = max(0.0, 1.0 - t / 0.34)
+        if flash > 0.01:
+            r = min(self.width(), self.height()) * (0.30 + 0.22 * t)
+            g = QRadialGradient(c, r)
+            col = QColor(self._halo_color)
+            a = col.alphaF()
+            col.setAlphaF(a * 0.20 * flash ** 1.6)
+            g.setColorAt(0.0, col)
+            col2 = QColor(self._halo_color)
+            col2.setAlphaF(0.0)
+            g.setColorAt(1.0, col2)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(g))
+            p.drawEllipse(c, r, r)
+        # ② 两圈错开扩散，快衰慢散
+        for delay, strength, width in ((0.0, 1.0, 7.0), (0.16, 0.55, 2.4)):
+            k = (t - delay) / (1.0 - delay)
+            if k <= 0:
+                continue
+            k = min(1.0, k)
+            r = base + k * (self._halo_max_r - base)
+            col = QColor(self._halo_color)
+            col.setAlphaF(max(0.0, 0.36 * strength * (1.0 - k) ** 1.5))
+            p.setPen(QPen(col, max(1.0, width * (1.0 - k))))
+            p.setBrush(QBrush())
+            p.drawEllipse(c, r, r)
         p.end()
 
 
 # ===========================================================================
-# 抽号主界面
+# 抽号页
 # ===========================================================================
 
 class DrawPage(QWidget):
-    """核心抽号页：数字滚动动画 + 开始/停止 + 本轮已抽 + 摇号池预览。"""
-
-    TICK_MS = 60            # 数字跳动间隔 60ms（50~100ms 区间）
-    STOP_ANIM_MS = 520
+    TICK_MS = 38
+    ROW_H = 40
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.store: ClassStore | None = None
         self.cfg: dict = {}
-        self._pool: list[dict] = []      # 当前摇号池
+        self._pool: list[dict] = []
+        self._snap: dict = {}
         self._running = False
+        self._num_px = 0
+        self._prev_round_len = 0
+        self._wide = None
+        self._batch_overlay = None
+        self._result: dict | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(self.TICK_MS)
         self._timer.timeout.connect(self._tick)
-        self._halo_anim = None
         self._build()
 
     # ------------------------------------------------------------------ UI
     def _build(self):
-        root = QHBoxLayout(self)
-        root.setContentsMargins(18, 12, 18, 10)
-        root.setSpacing(14)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ---------- 左侧：抽号核心区 ----------
-        left = QVBoxLayout()
-        left.setSpacing(12)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        root.addWidget(self.scroll)
+        # 主滚动区也要支持触控拖拽（小窗内容超出视口时可滚到底）
+        enable_touch_scroll(self.scroll)
 
-        self.result_card = PaperCard(click_ripple=True, hover_shine=True)
-        self.result_card.setMinimumHeight(300)
-        self.result_card.setCursor(Qt.PointingHandCursor)
-        self.result_card.setToolTip("抽号进行中时，点击此区域立即停止")
-        self.result_card.mousePressEvent = self._on_card_press  # 触屏/鼠标均可停止
+        self.content = QWidget()
+        self.content.setStyleSheet(f"background:{COLORS['surface']};")
+        self.grid = QGridLayout(self.content)
+        # 四边留白取同一值：左 28 / 右 24 / 上 22 / 下 18 的旧值会让
+        # 卡片组看起来微微偏右偏上，肉眼说不出哪里错但就是不齐。
+        self.grid.setContentsMargins(24, 20, 24, 20)
+        self.grid.setHorizontalSpacing(20)
+        self.grid.setVerticalSpacing(20)
+        self.scroll.setWidget(self.content)
 
-        rc = QVBoxLayout(self.result_card)
-        rc.setContentsMargins(20, 18, 20, 18)
-        rc.setSpacing(4)
+        # ---------------- 主区：elevated 卡片 ----------------
+        # 卡片不再内缩画阴影：可见轮廓 = 控件 rect，与下方批量卡、右栏严格对齐。
+        self.hero = PaperCard(self.content, radius=28, variant="elevated")
+        from PySide6.QtWidgets import QSizePolicy
+        self.hero.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        hv = QVBoxLayout(self.hero)
+        # 卡内留白：24 / 16 / 24 / 20（原先靠 16px 阴影环带撑出来的视觉留白）
+        hv.setContentsMargins(24, 16, 24, 20)
+        hv.setSpacing(8)
+        self.hero_lay = hv
 
-        self.halo = Halo(self.result_card)
-        self.halo.raise_()
-        self.result_card.installEventFilter(self)   # 卡片缩放时同步光晕尺寸
+        self.banner = Banner(self, "", "")
+        hv.addWidget(self.banner)
 
-        rc.addStretch(2)
-        self.num_label = ZoomLabel("—", self.result_card)
-        self.num_label.set_scale(1.0)
-        self.num_label.setAlignment(Qt.AlignCenter)
-        # 大号数字用衬线体（杂志感），随位数自动调整字号
-        self.num_label.setStyleSheet(
-            f"font-family:{FONT_SERIF}; color:{COLORS['ink']}; font-weight:600; font-size:150px;")
-        self.num_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        rc.addWidget(self.num_label, 0, Qt.AlignHCenter)
+        top = QHBoxLayout()
+        top.setContentsMargins(6, 0, 14, 0)
+        self.counter = QLabel("")
+        self.counter.setFixedHeight(28)
+        self.counter.setStyleSheet(
+            f"color:{COLORS['on_surface_variant']}; font-size:12px;"
+            f" background:{COLORS['surface_container_high']}; border-radius:10px;"
+            " padding:0 10px;")
+        self.seal = SealMark("中", self.hero)
+        top.addWidget(self.counter)
+        top.addStretch(1)
+        top.addWidget(self.seal)
+        hv.addLayout(top)
 
-        self.name_label = ZoomLabel(t("name_placeholder"), self.result_card)
-        self.name_label.set_scale(1.0)
-        self.name_label.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:21px;")
-        self.name_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        rc.addWidget(self.name_label, 0, Qt.AlignHCenter)
+        self.result = ResultStage()
+        self.result.set_watermark(True)
+        self.result.setCursor(Qt.PointingHandCursor)
+        self.result.mousePressEvent = self._on_card_press
+        rv = QVBoxLayout(self.result)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(2)
+        rv.addStretch(1)
+
+        self.halo = None
+        self.stamp_ring = None
+
+        self.empty_icon = IconGlyph("dice", 64, COLORS["outline_variant"],
+                                    width=2.0)
+        rv.addWidget(self.empty_icon, 0, Qt.AlignHCenter)
+        rv.addSpacerItem(_soft_gap(14))
+
+        self.caption = QLabel("")
+        self.caption.setAlignment(Qt.AlignCenter)
+        self.caption.setStyleSheet(
+            f"color:{COLORS['outline']}; font-size:12px; letter-spacing:2px;"
+            "background:transparent;")
+        rv.addWidget(self.caption, 0, Qt.AlignHCenter)
+        rv.addSpacerItem(_soft_gap(10))
+
+        self.num_label = RollLabel("", self.result)
+        self.num_label.set_pixel_size(150, 600)
+        # 水平方向忽略 sizeHint：大号时 sizeHint 会把网格列撑爆（小窗右缘溢出）
+        self.num_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        rv.addWidget(self.num_label, 0, Qt.AlignHCenter)
+        rv.addSpacerItem(_soft_gap(6))
+
+        self.name_label = QLabel("")
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.name_label.setStyleSheet(
+            f"color:{COLORS['on_surface']}; font-size:23px; font-weight:500;"
+            "letter-spacing:2px; background:transparent;")
+        rv.addWidget(self.name_label, 0, Qt.AlignHCenter)
 
         self.hint_label = QLabel("")
         self.hint_label.setAlignment(Qt.AlignCenter)
-        self.hint_label.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:13px;")
-        rc.addWidget(self.hint_label)
-        rc.addStretch(2)
-        left.addWidget(self.result_card, 1)
+        self.hint_label.setStyleSheet(
+            f"color:{COLORS['outline']}; font-size:12px; background:transparent;")
+        rv.addSpacerItem(_soft_gap(18))
+        rv.addWidget(self.hint_label, 0, Qt.AlignHCenter)
+        rv.addStretch(1)
 
-        # 操作按钮行：中央圆角矩形大按钮（开始/停止），两侧次要操作
-        btns = QHBoxLayout()
-        btns.setSpacing(10)
-        self.btn_toggle = make_button(t("draw_start"), "fab", min_height=64)
-        self.btn_toggle.setFixedSize(176, 64)
+        hv.addWidget(self.result, 1)
+
+        # 主操作按钮（hero 卡片内）
+        ctl = QHBoxLayout()
+        ctl.setContentsMargins(0, 6, 0, 4)
+        ctl.setSpacing(10)
+        self.btn_toggle = make_button(t("draw_start"), "filled", min_height=52)
+        self.btn_toggle.setFixedHeight(52)
+        self.btn_toggle.setMinimumWidth(220)
         self.btn_toggle.clicked.connect(self.toggle)
-        self.btn_reset = make_button(t("draw_reset_round"), "danger", min_height=48)
+        # 点击反馈：按钮自身水波纹 + 弹性脉冲。
+        # 不再叠 BurstOverlay 半透明浮层——那会强制整窗 alpha 合成，
+        # 每次点击都让整窗重绘（定格/连点时卡顿的来源之一）。
+        self.btn_toggle.clicked.connect(lambda: m_bounce(self.btn_toggle, s=0.90, dur=380))
+        self.btn_reset = make_button(t("draw_reset_round"), "outlined", min_height=42)
+        self.btn_reset.setMinimumWidth(110)
         self.btn_reset.clicked.connect(self._reset_round)
-        self.btn_export = make_button(t("draw_export"), "", min_height=48)
+        self.btn_export = make_button(t("draw_export"), "outlined", min_height=42)
+        self.btn_export.setMinimumWidth(110)
         self.btn_export.clicked.connect(self._export)
-        btns.addStretch(1)
-        btns.addWidget(self.btn_reset)
-        btns.addSpacing(28)
-        btns.addWidget(self.btn_toggle)
-        btns.addSpacing(28)
-        btns.addWidget(self.btn_export)
-        btns.addStretch(1)
-        left.addLayout(btns)
-        root.addLayout(left, 5)
+        ctl.addStretch(1)
+        ctl.addWidget(self.btn_toggle)
+        ctl.addSpacing(8)
+        ctl.addWidget(self.btn_reset)
+        ctl.addWidget(self.btn_export)
+        ctl.addStretch(1)
+        hv.addLayout(ctl)
 
-        # ---------- 右侧：本轮已抽 + 摇号池 ----------
-        right = QVBoxLayout()
-        right.setSpacing(12)
+        # ---------------- 批量卡片 ----------------
+        self.batch_card = PaperCard(self.content, radius=24, variant="elevated")
+        bh = QHBoxLayout(self.batch_card)
+        bh.setContentsMargins(18, 10, 14, 10)
+        bh.setSpacing(8)
+        self.batch_kicker = QLabel(t("batch_title"))
+        self.batch_kicker.setStyleSheet(
+            f"color:{COLORS['on_surface']}; font-size:14px; font-weight:600;"
+            "background:transparent;")
+        self.stepper = NumberStepper(app_data.BATCH_DEFAULT, 1, app_data.BATCH_MAX)
+        self.stepper.valueChanged.connect(self._on_batch_value)
+        self.chips = {}
+        for n in (3, 5, 10):
+            c = ChoiceChip(t("batch_count_unit", n=n), False, self.batch_card)
+            c.clicked.connect(lambda _=False, v=n, chip=c: (self.stepper.setValue(v),
+                                                            chip.setChecked(True)))
+            self.chips[n] = c
+        self.btn_batch = make_button(t("batch_draw_n", n=app_data.BATCH_DEFAULT), "tonal", 48)
+        self.btn_batch.setMinimumWidth(140)
+        self.btn_batch.clicked.connect(self.batch_draw)
+        # 同上：只保留弹性脉冲，浮层光环去掉（避免整窗 alpha 合成）
+        self.btn_batch.clicked.connect(lambda: m_bounce(self.btn_batch, s=0.90, dur=380))
 
-        # 本轮已抽
-        self.card_round = PaperCard(hover_shine=True)
-        card_round = self.card_round
-        vr = QVBoxLayout(card_round)
-        vr.setContentsMargins(16, 12, 16, 12)
-        vr.setSpacing(8)
-        tr = QHBoxLayout()
-        t_round = QLabel(t("round_title"))
-        t_round.setProperty("cardTitle", True)
-        self._t_round = t_round
-        self.round_count = QLabel("0 人")
-        self.round_count.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:12px;")
-        tr.addWidget(t_round)
-        tr.addStretch(1)
-        tr.addWidget(self.round_count)
-        vr.addLayout(tr)
+        bh.addWidget(self.batch_kicker)
+        bh.addSpacing(6)
+        bh.addWidget(self.stepper)
+        bh.addSpacing(4)
+        for n in (3, 5, 10):
+            bh.addWidget(self.chips[n])
+        bh.addStretch(1)
+        bh.addWidget(self.btn_batch)
+
+        # ---------------- 右栏 ----------------
+        self.rail = PaperCard(self.content, radius=24, variant="elevated")
+        from PySide6.QtWidgets import QSizePolicy as _SP
+        self.rail.setSizePolicy(_SP.Preferred, _SP.Expanding)
+        rl = QVBoxLayout(self.rail)
+        rl.setContentsMargins(22, 18, 20, 14)
+        rl.setSpacing(8)
+
+        h1 = QHBoxLayout()
+        self.t_round = QLabel(t("round_title"))
+        self.t_round.setStyleSheet(
+            f"color:{COLORS['on_surface']}; font-size:14px; font-weight:600;"
+            "background:transparent;")
+        self.round_count = QLabel("00")
+        self.round_count.setStyleSheet(
+            f"color:{COLORS['primary']}; font-size:20px; font-weight:600;"
+            "background:transparent;")
+        h1.addWidget(self.t_round)
+        h1.addStretch(1)
+        h1.addWidget(self.round_count)
+        rl.addLayout(h1)
+
         self.round_list = QListWidget()
         self.round_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.round_list.setFocusPolicy(Qt.NoFocus)
+        self.round_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        # 常显滚动条：池子/本轮列表的内容宽度与滚动条出现与否绑定，
+        # 抽完一个名字后滚动条消失会让整列条目横向"跳"一下（宽度突变）。
+        self.round_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         enable_touch_scroll(self.round_list)
-        vr.addWidget(self.round_list, 1)
-        right.addWidget(card_round, 3)
+        rl.addWidget(self.round_list, 0)
+        self.round_empty = QLabel(t("round_empty"))
+        self.round_empty.setStyleSheet(
+            f"color:{COLORS['outline']}; font-size:12px; padding:10px 0;"
+            "background:transparent;")
+        rl.addWidget(self.round_empty)
 
-        # 摇号池预览
-        self.card_pool = PaperCard(hover_shine=True)
-        card_pool = self.card_pool
-        vp = QVBoxLayout(card_pool)
-        vp.setContentsMargins(16, 12, 16, 12)
-        vp.setSpacing(8)
-        tp = QHBoxLayout()
-        t_pool = QLabel(t("pool_title"))
-        t_pool.setProperty("cardTitle", True)
-        self._t_pool = t_pool
-        tp.addWidget(t_pool)
-        tp.addStretch(1)
-        vp.addLayout(tp)
+        rl.addSpacing(12)
+        rl.addWidget(hairline())
 
-        badges = QHBoxLayout()
-        self.badge_ok = Badge("", "green")
-        self.badge_block = Badge("", "pink")
-        self.badge_cool = Badge("", "warm")
-        badges.addWidget(self.badge_ok)
-        badges.addWidget(self.badge_block)
-        badges.addWidget(self.badge_cool)
-        vp.addLayout(badges)
+        h2 = QHBoxLayout()
+        self.t_pool = QLabel(t("pool_title"))
+        self.t_pool.setStyleSheet(
+            f"color:{COLORS['on_surface']}; font-size:14px; font-weight:600;"
+            "background:transparent;")
+        h2.addWidget(self.t_pool)
+        h2.addStretch(1)
+        rl.addLayout(h2)
+
+        self.pool_stats = QLabel("")
+        self.pool_stats.setTextFormat(Qt.RichText)
+        self.pool_stats.setStyleSheet(
+            f"color:{COLORS['on_surface_variant']}; font-size:11.5px;"
+            "background:transparent;")
+        rl.addWidget(self.pool_stats)
 
         self.pool_list = QListWidget()
         self.pool_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.pool_list.setFocusPolicy(Qt.NoFocus)
+        self.pool_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        # 同上：避免"抽完一个 → 条目变少 → 滚动条消失 → 整列横向跳"
+        self.pool_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         enable_touch_scroll(self.pool_list)
-        vp.addWidget(self.pool_list, 1)
-        right.addWidget(card_pool, 2)
+        rl.addWidget(self.pool_list, 4)
 
-        root.addLayout(right, 3)
+        self._on_batch_value(self.stepper.value())
+        self.grid.addWidget(self.hero, 0, 0)
+        self.grid.addWidget(self.batch_card, 2, 0)
+        self.grid.addWidget(self.rail, 0, 1, 2, 1)
+        self.grid.setColumnStretch(0, 3)
+        self.grid.setColumnStretch(1, 2)
+        self.grid.setRowStretch(0, 1)
+        self.grid.setRowStretch(1, 0)
+        
+        self.result.installEventFilter(self)
+        self.content.installEventFilter(self)
 
-    # ------------------------------------------------------------- 逻辑
+    # ------------------------------------------------------------- 数据
     def set_store(self, store: ClassStore, cfg: dict):
-        """切换班级：停止一切进行中的抽号，重载数据，并播放入场动画。"""
         self.stop_silent()
         self.store = store
         self.cfg = cfg
         self._prev_round_len = 0
+        self._result = None
+        self.banner.hide()
+        self.seal.hide()
+        self.num_label.set_now("")
+        self.name_label.setText("")
+        self._set_state("empty")
         self.refresh()
-        self.play_entrance()
 
     def play_entrance(self):
-        """主界面入场：各卡片从不同方向交错滑入 + 淡入（交错节奏感）。"""
-        fade_slide_in(self.result_card, dx=0, dy=22, dur=340, delay=40)
-        fade_slide_in(self.btn_toggle, dy=14, dur=280, delay=360)
-        fade_slide_in(self.btn_reset, dy=14, dur=280, delay=400)
-        fade_slide_in(self.btn_export, dy=14, dur=280, delay=440)
-        fade_slide_in(self.card_round, dx=26, dy=0, dur=340, delay=200)
-        fade_slide_in(self.card_pool, dx=26, dy=0, dur=340, delay=270)
+        """兼容旧调用：入场动画统一由 MainWindow.page_enter 负责。
 
-    def retranslate(self):
-        """语言切换：更新卡片标题/按钮/提示并刷新数据。"""
-        self._t_round.setText(t("round_title"))
-        self._t_pool.setText(t("pool_title"))
-        self.btn_reset.setText(t("draw_reset_round"))
-        self.btn_export.setText(t("draw_export"))
-        self.btn_toggle.setText(t("draw_stop") if self._running else t("draw_start"))
-        if not self._running and not self.num_label.text():
-            self.name_label.setText(t("name_placeholder"))
-        self.refresh()
+        以前这里会对 hero / rail 各自做一次带 20/80ms 延迟的淡入，而整页
+        同时还有一次 page_enter —— 两套动画叠在同一批控件上，延迟那段还会
+        先把卡片全亮画一帧再跳回透明，观感就是「闪一下再糊上来」。
+        现在只保留整页一个动作，这里留空实现避免外部旧调用报错。
+        """
 
     def refresh(self):
-        """刷新本轮列表、摇号池、按钮可用性。"""
         if self.store is None:
             return
-        self._pool = self.store.draw_pool(self.cfg)
-        self._refresh_round()
+        self._snap = self.store.pool_snapshot(self.cfg)
+        self._pool = self._snap["pool"]
+        self._refresh_round(full=True)
         self._refresh_pool()
         self._refresh_hint()
+        self._sync_batch()
+        self._refresh_counter()
+        self._restore_last()
 
-    def _refresh_round(self):
+    def _restore_last(self):
+        """重新打开软件时，舞台上显示上一轮最后抽中的结果，而不是一片空白。"""
+        if self._running or not self.store:
+            return
+        items = self.store.round_list()
+        if not items:
+            self._set_state("empty")
+            return
+        last = items[-1]
+        try:
+            num = int(last.get("num", 0))
+        except (TypeError, ValueError):
+            return
+        self.num_label.set_now(f"{num:02d}" if num < 100 else str(num))
+        self.num_label.set_text_color(COLORS["accent"])
+        self._set_state("result")
+        self.name_label.setText(last.get("name", "") or "")
+        self.result.set_watermark(False)
+
+    def _hero_pulse(self):
+        """落定时数字区域轻微缩放脉冲（用 _pop 属性，不动 geometry）。"""
+        self.num_label.pop_once(380)
+
+    def _reveal_name(self, name: str):
+        if not name:
+            self._set_name("")
+            return
+        self._set_name(name)
+        self.name_label.show()
+        try:
+            m_pop_in(self.name_label, dy=16, s=0.88, dur=520)  # 姓名弹性揭晓
+        except Exception:
+            pass
+
+    def _set_name(self, text: str, muted: bool = False):
+        self.name_label.setText(text)
+        color = COLORS["outline"] if muted else COLORS["on_surface"]
+        self.name_label.setStyleSheet(
+            f"color:{color}; font-size:23px; font-weight:500;"
+            "letter-spacing:2px; background:transparent;")
+
+    def _set_state(self, mode: str):
+        """舞台三态：empty 空、running 抽号中、result 已抽中。"""
+        empty = mode == "empty"
+        self.caption.setText(
+            t("draw_empty_hint") if empty else
+            (t("draw_running") if mode == "running" else t("draw_result")))
+        self.num_label.setVisible(not empty)
+        self.name_label.setVisible(not empty)
+        self.empty_icon.setVisible(empty)
+        color = {"running": COLORS["primary"], "result": COLORS["accent"],
+                 "empty": COLORS["outline"]}[mode]
+        self.caption.setStyleSheet(
+            f"color:{color}; font-size:12px; letter-spacing:2px; background:transparent;")
+
+    def _refresh_counter(self):
+        n = len(self.store.round_list()) + 1 if self.store else 1
+        self.counter.setText(t("round_counter_fmt", n=n))
+
+    def _add_row(self, widget: QListWidget, text: str, num: int = -1, h: int = 40):
+        item = QListWidgetItem(text)
+        item.setSizeHint(QSize(0, h))
+        if num >= 0:
+            item.setData(Qt.UserRole, num)
+        widget.addItem(item)
+        return item
+
+    def _refresh_round(self, full: bool = True):
         items = self.store.round_list() if self.store else []
         prev = getattr(self, "_prev_round_len", 0)
         self.round_list.clear()
-        for i, it in enumerate(items, 1):
+        for i, it in enumerate(items):
             name = it.get("name") or f"#{int(it.get('num', 0)):02d}"
-            self.round_list.addItem(f"{i:02d}　{name}")
-            # 新抽中的条目：莫兰迪蓝高亮渐隐（点名感反馈）
-            if i > prev:
-                flash_item_background(self.round_list.item(i - 1),
-                                      QColor(COLORS["blue_soft"]), dur=1000)
+            num = int(it.get("num", 0))
+            txt = f"{num:02d}    {name}" if name and not name.startswith("#") else name
+            item = self._add_row(self.round_list, txt, num, 40)
+            if full and i >= prev:
+                flash_item_background(item, QColor(COLORS["primary_container"]), dur=800)
         self._prev_round_len = len(items)
-        self.round_count.setText(f"{len(items)} 人")
+        self.round_count.setText(f"{len(items):02d}")
+        # 右栏不让两条记录撑出大半屏空白：按内容限高，剩余空间给摇号池
+        self.round_list.setMaximumHeight(max(40, min(420, len(items) * 44 + 10)))
+        self.round_list.setVisible(bool(items))
+        self.round_empty.setVisible(not items)
+
+    def _append_round_row(self, stu: dict):
+        idx = self.round_list.count()
+        num = int(stu.get("num", 0))
+        name = stu.get("name") or f"#{num:02d}"
+        item = self._add_row(self.round_list, f"{num:02d}    {name}", num, 40)
+        self.round_list.scrollToBottom()
+        flash_item_background(item, QColor(COLORS["primary_container"]), dur=800)
+        self._prev_round_len = idx + 1
+        self.round_count.setText(f"{idx + 1:02d}")
+        # 第一次抽号时列表还处于隐藏状态，这里要显式打开，否则会一直显示「尚无记录」
+        self.round_list.setVisible(True)
+        self.round_empty.setVisible(False)
+        self.round_list.setMaximumHeight(max(40, min(420, (idx + 1) * 44 + 10)))
 
     def _refresh_pool(self):
         if not self.store:
             return
-        students = self.store.get_students(self.cfg)
-        long_set = set(self.store.long_exempt())
-        short_set = set(self.store.short_exempt())
-        cool_set = set(self.store.cooling_nums(self.cfg))
-        pool = self._pool
-        pool_nums = {s["num"] for s in pool}
-        blocked = [s for s in students if s["num"] in long_set or s["num"] in short_set]
-        cooling = [s for s in students if s["num"] in cool_set]
-        self.badge_ok.setText(t("pool_ok", n=len(pool)))
-        self.badge_block.setText(t("pool_block", long=len(long_set), short=len(short_set)))
-        self.badge_cool.setText(t("pool_cool", n=len(cooling)))
+        snap = self._snap or self.store.pool_snapshot(self.cfg)
+        self._update_badges(snap)
         self.pool_list.clear()
-        for s in pool[:40]:
+        for s in snap["pool"]:
             name = s.get("name") or ""
-            self.pool_list.addItem(f"{s['num']:02d}　{name if name else t('unnamed')}")
-        if len(pool) > 40:
-            self.pool_list.addItem(f"…… 共 {len(pool)} 人")
-        # 可用数少于人数时标记哪些在别处（不展开，保持清爽）
+            txt = f"{s['num']:02d}    {name if name else t('unnamed')}"
+            self._add_row(self.pool_list, txt, s["num"], 36)
+
+    def _update_badges(self, snap: dict | None = None):
+        snap = snap or self._snap or {}
+        long_n, short_n = len(snap.get("long", set())), len(snap.get("short", set()))
+        dot = '<span style="color:{c}">●</span> '
+        parts = [
+            dot.format(c=COLORS["primary"]) + t("pool_ok", n=len(snap.get("pool", []))),
+            dot.format(c=COLORS["error"]) + t("pool_block", n=long_n + short_n),
+            dot.format(c=COLORS["outline"]) + t("pool_cool", n=len(snap.get("cool", set()))),
+        ]
+        self.pool_stats.setText("&nbsp;&nbsp;".join(parts))
+        self.pool_stats.setToolTip(t("pool_block_tip", long=long_n, short=short_n))
+
+    def _remove_pool_row(self, num: int):
+        for i in range(self.pool_list.count()):
+            item = self.pool_list.item(i)
+            if item and item.data(Qt.UserRole) == num:
+                self.pool_list.takeItem(i)
+                return
 
     def _refresh_hint(self):
         total = self.cfg.get("total_count", 0)
         n_pool = len(self._pool)
-        anti_on = self.cfg.get("anti_dup_enabled", True)
         if total == 0:
-            self.hint_label.setText(t("hint_no_config"))
+            text = t("hint_no_config")
         elif n_pool == 0:
-            self.hint_label.setText(t("hint_empty"))
+            text = t("hint_empty")
         else:
             extra = ""
-            if not anti_on:
+            if not self.cfg.get("anti_dup_enabled", True):
                 extra = t("hint_anti_off")
             elif self.cfg.get("mode") == MODE_ADVANCED:
                 extra = t("hint_advanced")
-            self.hint_label.setText(t("hint_pool", n=n_pool, extra=extra))
-        self.btn_toggle.setEnabled(n_pool > 0)
-        if n_pool == 0 or total == 0:
-            self.btn_toggle.setText(t("draw_start"))
+            text = t("hint_pool", n=n_pool, extra=extra)
+        self.hint_label.setText(text)
 
-    # --------------------------------------------------------- 抽号流程
+    def _sync_batch(self):
+        n = max(1, len(self._pool))
+        self.stepper.setMaximum(n)
+        if self.stepper.value() > n:
+            self.stepper.setValue(n)
+        self.btn_batch.setEnabled(len(self._pool) > 0)
+        self.btn_batch.setText(t("batch_draw_n", n=self.stepper.value()))
+
+    def _on_batch_value(self, n: int):
+        self.btn_batch.setText(t("batch_draw_n", n=n))
+        for k, c in self.chips.items():
+            c.setChecked(k == n)
+
+    @staticmethod
+    def _clamp_batch(want: int, pool_n: int) -> tuple[int, bool]:
+        try:
+            want = int(want)
+        except (TypeError, ValueError):
+            want = 1
+        if pool_n <= 0:
+            return 0, True
+        if want > pool_n:
+            return pool_n, True
+        return max(1, want), False
+
+    # --------------------------------------------------------- 抽号
+    def _stretch_grid(self):
+        """精确分配：hero 撑满扣除批量行与边距后的全部高度。"""
+        if getattr(self, "_stretching", False):
+            return
+        self._stretching = True
+        try:
+            self._do_stretch()
+        finally:
+            self._stretching = False
+
+    def _do_stretch(self):
+        vp_h = self.scroll.viewport().height()
+        if vp_h <= 0:
+            return
+        # 绝不再给 hero 设 maximumHeight 硬锁：小窗时内容（计数+结果+按钮行）
+        # 塞不下固定高度就会溢出卡片，被 grid 下一行的批量卡片盖住——这正是
+        # "大量元素被遮挡"的根因。改为只给下限，高度由内容驱动。
+        self.hero.setMaximumHeight(16777215)
+
+        m = self.grid.contentsMargins()
+        vspace = self.grid.verticalSpacing()
+        batch_h = 74
+        if self._wide:
+            # 宽屏：hero 与右栏左右并排，只有两行；hero 按视口剩余精确自适应，
+            # 不设大下限——否则 need > 视口会把批量行底部切掉。数字字号会
+            # 随 result 变小自动收敛，内容仍放得下。
+            hero_h = max(280, vp_h - m.top() - m.bottom() - vspace - batch_h)
+            self.rail.setMinimumHeight(0)
+            self.rail.setMaximumHeight(16777215)
+            need = m.top() + m.bottom() + vspace + hero_h + batch_h
+            self.grid.setRowStretch(0, 1)
+            self.grid.setRowStretch(1, 0)
+            self.grid.setRowStretch(2, 0)
+        else:
+            # 窄屏：hero / 批量 / 右栏 三行堆叠。给每行足量高度，让 content
+            # 撑到内容所需总高，由 QScrollArea 滚动承载（否则会溢出到 content
+            # 之外被底部导航栏盖住，且滚不到）。
+            # hero 按视口精确自适应：保证 hero + 批量行能完整落在视口内，
+            # 否则批量行底部会被导航栏盖住（真实 exe 带标题栏，视口比
+            # 预期小约 32px，写死 340 会挤出去）。右栏放下方由滚动承载。
+            hero_h = max(280, min(460, vp_h - m.top() - m.bottom()
+                                   - 2 * vspace - batch_h))
+            rail_h = 360
+            self.rail.setMinimumHeight(rail_h)
+            self.rail.setMaximumHeight(16777215)
+            need = m.top() + m.bottom() + hero_h + batch_h + rail_h + vspace * 2
+            self.grid.setRowStretch(0, 1)
+            self.grid.setRowStretch(1, 0)
+            self.grid.setRowStretch(2, 0)
+
+        self.content.setMinimumHeight(max(vp_h, need))
+        self.hero.setMinimumHeight(hero_h)
+        self.batch_card.setMinimumHeight(batch_h)
+
+        # 布局生效后再按实际尺寸校准数字与文字字号
+        lay = self.hero.layout()
+        if lay is not None:
+            lay.activate()
+        self._apply_num_size(self._current_digits())
+        self._scale_result_text()
+
+    def _current_digits(self) -> int:
+        txt = "".join(c for c in (self.num_label.text() or "") if c.isdigit())
+        return len(txt) if txt else 2
+
+    def _scale_result_text(self):
+        """姓名/提示字号跟随卡片高度缩放（空态与结果态都要调用）。"""
+        h = max(120, self.result.height())
+        hint_px = max(11, min(22, int(h * 0.05)))
+        self.hint_label.setStyleSheet(
+            f"color:{COLORS['outline']}; font-size:{hint_px}px; background:transparent;")
+        name_px = max(18, min(48, int(h * 0.12)))
+        self.name_label.setStyleSheet(
+            f"color:{COLORS['on_surface']}; font-size:{name_px}px; font-weight:500;"
+            "letter-spacing:2px; background:transparent;")
+
+    def _scale_empty_state(self):
+        """空态的骰子图标和文字跟随卡片尺寸缩放。"""
+        h = max(120, self.result.height())
+        icon_px = max(48, min(280, int(h * 0.38)))
+        self.empty_icon.setFixedSize(icon_px, icon_px)
+        font_px = max(13, min(32, int(h * 0.075)))
+        cap_color = COLORS["primary"] if self.caption.text() and "抽" not in self.caption.text() else COLORS["outline"]
+        self.caption.setStyleSheet(
+            f"color:{cap_color}; font-size:{font_px}px; letter-spacing:2px; background:transparent;")
+        self._scale_result_text()
+
+    def _apply_num_size(self, digits: int):
+        h = max(120, self.result.height())
+        w = max(200, self.result.width())
+        vp = max(240, self.scroll.viewport().height())
+        # 视口上限：防止从大窗带过来的巨大字号把 hero 内容撑爆（小窗溢出）
+        base = int(min(h * 0.44, w * 0.30, vp * 0.26))
+        if digits == 3:
+            base = int(base * 0.74)
+        elif digits >= 4:
+            base = int(base * 0.58)
+        base = max(40, base)
+        if base == self._num_px:
+            return
+        self._num_px = base
+        self.num_label.set_pixel_size(base, 600)
+
     def toggle(self):
-        """开始/停止切换（按钮、空格键、点按结果区共用）。"""
         if not self.store:
             return
         if self._running:
@@ -311,134 +747,270 @@ class DrawPage(QWidget):
     def start(self):
         if not self.store:
             return
-        self._pool = self.store.draw_pool(self.cfg)
+        snap = self.store.pool_snapshot(self.cfg)
+        self._snap = snap
+        self._pool = snap["pool"]
         if not self._pool:
-            snack(self, t("snack_pool_empty"),
-                  duration=3600)
-            self.refresh()
+            if not self._maybe_auto_reset(force=True):
+                snack(self, t("snack_pool_empty"), kind="error", duration=3600)
             return
         self._running = True
+        self._result = None
+        self.seal.hide()
+        self._set_name("· · ·", muted=True)
+        self._set_state("running")
+        self.num_label.set_text_color(COLORS["accent"])
         self.btn_toggle.setText(t("draw_stop"))
-        self.num_label.setText("")
-        # 回到“滚动态”样式：墨色 + 按位数自适应字号
-        self.num_label.set_text_color(COLORS["ink"])
+        self.num_label.set_rolling(True)
+        self._num_px = 0
         self._apply_num_size(2)
-        start_halo(self.halo)
+        self._refresh_pool_size()
+        self.result.set_running(True)
         self._timer.start()
-        # 立即跳动一次，避免延迟感
         self._tick()
 
-    def _apply_num_size(self, digits: int):
-        """按位数自适应衬线大数字字号（2 位 150px，3 位及以上 108px）。"""
-        size = 150 if digits <= 2 else 108
-        self.num_label.setStyleSheet(
-            f"font-family:{FONT_SERIF}; color:{COLORS['ink']}; font-weight:600; font-size:{size}px;")
+    def _refresh_pool_size(self):
+        """抽号中把大数字容器撑到可用高度（避免布局跳动）。"""
+        self.result.updateGeometry()
 
     def _tick(self):
         if not self._running or not self._pool:
             return
         s = random.choice(self._pool)
-        self._show(s, rolling=True)
-
-    def _show(self, s: dict, rolling: bool):
         num = s["num"]
-        self.num_label.setText(f"{num:02d}" if num < 100 else str(num))
-        self._apply_num_size(3 if num >= 100 else 2)
-        if self.cfg.get("mode") == MODE_ADVANCED:
-            self.name_label.setText(s.get("name") or "")
-        else:
-            self.name_label.setText("")
-        if rolling and self._running:
-            # 每一跳的微脉冲：数字“弹跳”滚动（老虎机的机械感）
-            old = getattr(self, "_tick_anim", None)
-            if old:
-                old.stop()
-            tick_pulse(self.num_label).start()
+        self.num_label.set_fast(f"{num:02d}" if num < 100 else str(num), 52)
+        self._apply_num_size(len(str(num)))
 
     def stop(self):
-        """停止抽号并落盘记录（定格即结果）。"""
         if not self._running:
             return
         self._timer.stop()
         self._running = False
-        stop_halo(self.halo)
-        self.btn_toggle.setText(t("draw_start"))
+        self.result.set_running(False)
 
-        # 定格：当前显示的数字就是结果
-        cur = self._current()
-        if cur is None:
-            self.refresh()
+        if not self._pool:
+            self.refresh(); return
+        result = random.choice(self._pool)
+        self._result = result
+        num, name = result["num"], result.get("name", "")
+        anti = bool(self.cfg.get("anti_dup_enabled", True))
+        self.store.record_draws([{"num": num, "name": name}],
+                                self.cfg.get("mode", MODE_SIMPLE), anti_dup=anti)
+
+        self._snap = self.store.pool_snapshot(self.cfg)
+        self._pool = self._snap["pool"]
+        self._append_round_row(result)
+        self._remove_pool_row(num)
+        self._update_badges()
+        self._refresh_hint()
+        self._sync_batch()
+
+        QTimer.singleShot(90, lambda: self._rolling_step())
+        QTimer.singleShot(200, lambda: self._rolling_step())
+        QTimer.singleShot(330, lambda: self._settle(result))
+
+        QTimer.singleShot(1250, lambda st=self.store: self._maybe_auto_reset(expect_store=st))
+
+    def _rolling_step(self):
+        if not self._pool:
             return
-        num, name = cur["num"], cur.get("name", "")
-        result = self.store
-        result.add_history(num, name, self.cfg.get("mode", MODE_SIMPLE))
-        result.append_round(num, name)
-        if self.cfg.get("anti_dup_enabled", True):
-            result.record_cooling(num)
+        s = random.choice(self._pool)
+        self.num_label.set_fast(f"{s['num']:02d}" if s["num"] < 100 else str(s["num"]), 90)
 
-        # 定格弹性动画：1.0 → 1.1 → 1.0（OutBack 自然过冲）+ 光晕闪光
-        self.num_label.set_text_color(COLORS["blue_dark"])
-        elastic_zoom(self.num_label, start=0.86, dur=self.STOP_ANIM_MS).start()
-        if name:
-            self.name_label.set_text_color(COLORS["ink"])
-            elastic_zoom(self.name_label, start=0.9, dur=self.STOP_ANIM_MS).start()
-        flash_halo(self.halo, dur=640)
-
-        self.refresh()
-        # 徽章数字变化反馈：轻微呼吸
-        self.badge_ok.pulse()
-        self.badge_cool.pulse()
-
-    def _current(self) -> dict | None:
-        """读取当前显示的数字，并从摇号池中找到对应学生。"""
-        text = self.num_label.text()
+    def _settle(self, result: dict):
         try:
-            num = int(text.lstrip("0")) if text.lstrip("0") else int(text or "0")
-        except ValueError:
-            num = 0
-        for s in self._pool:
-            if s["num"] == num:
-                return s
-        return None
+            self._do_settle(result)
+        except Exception:
+            pass
 
+    def _do_settle(self, result: dict):
+        num, name = result["num"], result.get("name", "")
+        self.btn_toggle.setText(t("draw_start"))
+        self.num_label.set_rolling(False)
+        self.num_label.roll_to(f"{num:02d}" if num < 100 else str(num), 380)
+        self.num_label.set_text_color(COLORS["accent"])
+        self._apply_num_size(len(str(num)))
+        self._set_state("result")
+        QTimer.singleShot(180, lambda: self._reveal_name(name))
+        self.result.set_watermark(False)
+        self.result.set_running(False)
+        self.seal.stamp()
+        # 数字落定瞬间：真正向外弹一下（MotionEffect 已允许出框）+ 中心闪光
+        QTimer.singleShot(300, lambda: (
+            m_bounce(self.num_label, s=1.14, dur=620, rot=-0.6),
+            self.result.fire_halo(COLORS["primary"], max_r=210, dur=780),
+            m_bounce(self.seal, s=1.10, dur=520)))
+        # 池列表刷新推迟到弹跳峰值之后：避免 55 行重建与动画抢同一批帧
+        QTimer.singleShot(960, self._refresh_pool)
+        QTimer.singleShot(980, self._refresh_counter)
+
+    # --------------------------------------------------------- 批量
+    def batch_draw(self):
+        if not self.store:
+            return
+        snap = self.store.pool_snapshot(self.cfg)
+        self._snap = snap
+        self._pool = snap["pool"]
+        if not self._pool:
+            if not self._maybe_auto_reset(force=True):
+                inform(self, t("batch_title"), t("batch_none"), warn=True)
+            return
+        want = max(1, self.stepper.value())
+        want, exceeded = self._clamp_batch(want, len(self._pool))
+        if exceeded:
+            if not ask(self, t("batch_exceed_title"),
+                       t("batch_exceed_fmt", pool=len(self._pool), want=self.stepper.value()),
+                       yes=t("batch_draw_n", n=len(self._pool)), no=t("dlg_cancel")):
+                return
+        picks = random.sample(self._pool, want)
+        anti = bool(self.cfg.get("anti_dup_enabled", True))
+        self.store.record_draws(picks, self.cfg.get("mode", MODE_SIMPLE), anti_dup=anti)
+
+        self._snap = self.store.pool_snapshot(self.cfg)
+        self._pool = self._snap["pool"]
+        self._prev_round_len = max(0, len(self.store.round_list()) - want)
+        self._refresh_round(full=True)
+        self._refresh_pool()
+        self._refresh_hint()
+        self._sync_batch()
+        self._refresh_counter()
+
+        self.cfg["batch_count"] = want
+        try:
+            self.store.save_config(self.cfg, durable=False)
+        except Exception:
+            pass
+
+        overlay = BatchRevealOverlay(self.window(), picks,
+                                     [s["num"] for s in snap["pool"]])
+        overlay.closed.connect(self._on_batch_closed)
+        self._batch_store = self.store
+        self._batch_overlay = overlay
+        overlay.show(); overlay.raise_(); overlay.start()
+        snack(self, t("batch_snack_fmt", n=len(picks)), kind="success", duration=2400)
+
+    def _on_batch_closed(self):
+        self._batch_overlay = None
+        if not self._maybe_auto_reset(expect_store=getattr(self, "_batch_store", None)):
+            self._restore_last()
+
+    # --------------------------------------------------------- 自动重置
+    def _maybe_auto_reset(self, force: bool = False, expect_store=None) -> bool:
+        if not self.store:
+            return False
+        if expect_store is not None and expect_store is not self.store:
+            return False
+        snap = self.store.pool_snapshot(self.cfg)
+        self._snap = snap
+        self._pool = snap["pool"]
+        if snap["pool"]:
+            self._sync_batch()
+            return False
+        total = snap["total"]
+        if total <= 0:
+            return False
+        if len(snap["long"] | snap["short"]) >= total:
+            if force:
+                inform(self, t("batch_title"), t("pool_blocked_all"), warn=True)
+            return False
+        n = len(self.store.round_list())
+        self.store.reset_round()
+        self.refresh()
+        self.num_label.set_text_color(COLORS["on_surface"])
+        self._show_reset_banner(n)
+        snack(self, t("auto_reset_snack"), kind="success", duration=3400)
+        return True
+
+    def _show_reset_banner(self, n: int):
+        old = getattr(self, "banner", None)
+        if old is not None:
+            self.hero_lay.removeWidget(old)
+            old.hide(); old.deleteLater()
+        self.banner = Banner(self, t("auto_reset_title"),
+                             t("auto_reset_fmt", n=n) if n else t("auto_reset_hint"),
+                             kind="success")
+        self.hero_lay.insertWidget(0, self.banner)
+        self.banner.pop(4600)
+
+    # -------------------------------------------------------- 其他
     def stop_silent(self):
-        """没有任何记录的强制停止（切班级时用）。"""
+        self.num_label.set_rolling(False)
         if self._running:
             self._timer.stop()
             self._running = False
-            stop_halo(self.halo)
-        self.btn_toggle.setText(t("draw_start"))
+            self.result.set_running(False)
 
     def _on_card_press(self, ev: QMouseEvent):
-        # 触点涟漪反馈（鼠标/触屏一致）
-        try:
-            self.result_card.ripple_at(ev.position())
-        except Exception:
-            pass
         if self._running:
             self.stop()
         else:
             self.toggle()
 
     def eventFilter(self, obj, event):
-        """结果卡片尺寸变化时，让光晕铺满卡片。"""
-        if obj is self.result_card and event.type() == event.Type.Resize:
-            self.halo.setGeometry(self.result_card.rect())
+        if obj in (self.content, self.scroll) and event.type() == event.Type.Resize:
+            if not getattr(self, "_stretching", False):
+                self._stretch_grid()
         return super().eventFilter(obj, event)
 
-    # -------------------------------------------------------- 操作按钮
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_layout()
+        self._stretch_grid()
+
+    def _apply_layout(self):
+        wide = self.width() >= 900
+        if wide == self._wide:
+            return
+        self._wide = wide
+        # 具体高度统一交给 _do_stretch（此处只切换 widget 位置与列/行比例）
+        if wide:
+            self.grid.addWidget(self.hero, 0, 0, 1, 1)
+            self.grid.addWidget(self.batch_card, 1, 0, 1, 1)
+            self.grid.addWidget(self.rail, 0, 1, 2, 1)
+            self.grid.setColumnStretch(0, 3)
+            self.grid.setColumnStretch(1, 2)
+        else:
+            self.grid.addWidget(self.hero, 0, 0, 1, 2)
+            self.grid.addWidget(self.batch_card, 1, 0, 1, 2)
+            self.grid.removeWidget(self.rail)
+            self.grid.addWidget(self.rail, 2, 0, 1, 2)
+            self.grid.setColumnStretch(0, 1)
+            self.grid.setColumnStretch(1, 0)
+        self._stretch_grid()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_layout()
+        self._stretch_grid()
+
+    def retranslate(self):
+        self.t_round.setText(t("round_title"))
+        self.t_pool.setText(t("pool_title"))
+        self.btn_reset.setText(t("draw_reset_round"))
+        self.btn_export.setText(t("draw_export"))
+        self.btn_batch.setText(t("batch_draw_n", n=self.stepper.value()))
+        for n, c in self.chips.items():
+            c.setText(t("batch_count_unit", n=n))
+        self.refresh()
+
     def _reset_round(self):
         if not self.store:
             return
         n = len(self.store.round_list())
         if n == 0:
-            snack(self, t("snack_reset_none"))
-            return
+            snack(self, t("snack_reset_none")); return
         if not ask(self, t("draw_reset_round"), t("confirm_reset_fmt", n=n),
                    yes=t("dlg_reset"), no=t("dlg_cancel")):
             return
         self.store.reset_round()
         self.refresh()
+        self.num_label.set_rolling(False)
+        self.num_label.set_text_color(COLORS["on_surface"])
+        self.num_label.set_now("")
+        self._set_name("")
+        self.seal.hide()
+        self._set_state("empty")
+        self.result.set_watermark(True)
         snack(self, t("snack_reset_done"))
 
     def _export(self):
@@ -446,23 +1018,22 @@ class DrawPage(QWidget):
             return
         text = self.store.export_text()
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = self.store.dir.parent.parent / "exports" / \
-              f"{app_data.safe_filename(self.store.name)}_记录_{ts}.txt"
+        out = self.store.base_dir / "exports" / \
+            f"{app_data.safe_filename(self.store.name)}_记录_{ts}.txt"
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(text, encoding="utf-8")
             snack(self, t("snack_export_ok", name=out.name), kind="success")
         except Exception:
-            snack(self, t("snack_export_fail"),
-                  kind="error", duration=4200)
+            snack(self, t("snack_export_fail"), kind="error", duration=4200)
 
 
 # ===========================================================================
-# 抽号记录页
+# 记录页
 # ===========================================================================
 
 class HistoryPage(QWidget):
-    """永久抽号记录（时间倒序、滚动浏览、导出为 TXT）。"""
+    history_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -471,51 +1042,78 @@ class HistoryPage(QWidget):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 12, 18, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(32, 18, 28, 12)
+        lay.setSpacing(8)
 
         head = QHBoxLayout()
         self._t_title = QLabel(t("history_title"))
-        self._t_title.setStyleSheet(serif_style(20, COLORS["ink"], 600))
+        self._t_title.setStyleSheet(serif_style(24, COLORS["on_surface"], 600) + "; background:transparent;")
         self.summary = QLabel("")
-        self.summary.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:13px;")
+        self.summary.setStyleSheet(
+            f"color:{COLORS['ink_faint']}; font-size:12px; background:transparent;")
+        self.btn_manage = make_button(t("manage_records"), "", min_height=44)
+        self.btn_manage.clicked.connect(self._manage)
         self.btn_export = make_button(t("export_txt"), "primary", min_height=44)
         self.btn_export.clicked.connect(self._export)
+        head.addWidget(_page_kicker("02"))
+        head.addSpacing(10)
         head.addWidget(self._t_title)
+        head.addSpacing(12)
         head.addWidget(self.summary)
         head.addStretch(1)
+        head.addWidget(self.btn_manage)
         head.addWidget(self.btn_export)
         lay.addLayout(head)
-
-        self._t_tip = QLabel(t("history_hint"))
-        tip = self._t_tip
-        tip.setStyleSheet(f"color:{COLORS['ink_faint']}; font-size:12px;")
-        lay.addWidget(tip)
+        lay.addWidget(hairline())
 
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels([t("col_no"), t("col_time"), t("col_num"), t("col_name"), t("col_mode")])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.verticalHeader().setDefaultSectionSize(38)
+        self.table.setHorizontalHeaderLabels(
+            [t("col_no"), t("col_time"), t("col_num"), t("col_name"), t("col_mode")])
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Fixed)
+        hh.setSectionResizeMode(1, QHeaderView.Fixed)
+        hh.setSectionResizeMode(2, QHeaderView.Fixed)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        hh.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 64)
+        self.table.setColumnWidth(1, 210)
+        self.table.setColumnWidth(2, 110)
+        self.table.setColumnWidth(4, 90)
+        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)  # 已有序号列
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setShowGrid(False)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         enable_touch_scroll(self.table)
-        lay.addWidget(self.table, 1)
+        # 占比列自绘（原先 setCellWidget 会漏控件，见 PctBarDelegate 说明）
+        self._pct_delegate = PctBarDelegate(self.table)
+        self.table.setItemDelegateForColumn(3, self._pct_delegate)
+        self.table.setFrameShape(QFrame.NoFrame)
+        self.table.viewport().setAutoFillBackground(False)
+        self.table.viewport().setStyleSheet("background:transparent;")
+        self.table_card = PaperCard(self, radius=20, variant="elevated")
+        tc = QVBoxLayout(self.table_card)
+        tc.setContentsMargins(10, 6, 10, 8)
+        tc.addWidget(self.table)
+        lay.addWidget(self.table_card, 1)
+
+        self._t_tip = QLabel(t("history_hint"))
+        self._t_tip.setStyleSheet(
+            f"color:{COLORS['ink_faint']}; font-size:11.5px; background:transparent;")
+        lay.addSpacing(2)
+        lay.addWidget(self._t_tip)
 
     def set_store(self, store: ClassStore):
         self.store = store
         self.refresh()
-        fade_slide_in(self.table, dx=18, dy=0, dur=300, delay=80)
-        fade_slide_in(self.btn_export, dy=10, dur=260, delay=40)
+        fade_in(self.table, dur=240, delay=40)
 
     def retranslate(self):
         self._t_title.setText(t("history_title"))
         self._t_tip.setText(t("history_hint"))
         self.btn_export.setText(t("export_txt"))
+        self.btn_manage.setText(t("manage_records"))
         self.table.setHorizontalHeaderLabels(
             [t("col_no"), t("col_time"), t("col_num"), t("col_name"), t("col_mode")])
         self.refresh()
@@ -524,44 +1122,61 @@ class HistoryPage(QWidget):
         if not self.store:
             return
         records = self.store.history()
-        self.table.setRowCount(0)
-        rows = list(reversed(records))          # 时间倒序：最新在前
+        rows = list(reversed(records))
+        self.table.setUpdatesEnabled(False)
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            c0 = QTableWidgetItem(str(i + 1))
+            c0 = QTableWidgetItem(str(len(rows) - i))
+            c0.setTextAlignment(Qt.AlignCenter)
             c1 = QTableWidgetItem(str(r.get("time", "")))
             c2 = QTableWidgetItem(str(int(r.get("num", 0))).zfill(2))
             c2.setTextAlignment(Qt.AlignCenter)
             c3 = QTableWidgetItem(r.get("name") or "—")
-            c4 = QTableWidgetItem("高级" if r.get("mode") == MODE_ADVANCED else "简易")
+            c4 = QTableWidgetItem(t("mode_advanced") if r.get("mode") == MODE_ADVANCED
+                                  else t("mode_simple"))
             c4.setTextAlignment(Qt.AlignCenter)
             for ci, c in enumerate((c0, c1, c2, c3, c4)):
                 self.table.setItem(i, ci, c)
-        self.summary.setText(f"共 {len(records)} 条历史记录")
+        self.table.setUpdatesEnabled(True)
+        self.summary.setText(t("count_items", n=len(records)))
+
+    def _manage(self):
+        if not self.store:
+            return
+        from .ui_dialogs import AdminPasswordDialog, HistoryCleanupDialog
+        pwd = AdminPasswordDialog(self)
+        if not pwd.exec() or not pwd.verified:
+            return
+        dlg = HistoryCleanupDialog(self, self.store)
+        if not dlg.exec():
+            return
+        if dlg.deleted_count:
+            self.refresh()
+            self.history_changed.emit()
+            snack(self, t("clean_done_fmt", n=dlg.deleted_count,
+                          name=dlg.archive_path.name if dlg.archive_path else "-"),
+                  kind="success", duration=4200)
 
     def _export(self):
         if not self.store:
             return
         text = self.store.export_text()
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = self.store.dir.parent.parent / "exports" / \
-              f"{app_data.safe_filename(self.store.name)}_记录_{ts}.txt"
+        out = self.store.base_dir / "exports" / \
+            f"{app_data.safe_filename(self.store.name)}_记录_{ts}.txt"
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(text, encoding="utf-8")
             snack(self, t("snack_export_ok", name=out.name), kind="success")
         except Exception:
-            snack(self, t("snack_export_fail"),
-                  kind="error", duration=4200)
+            snack(self, t("snack_export_fail"), kind="error", duration=4200)
 
 
 # ===========================================================================
-# 概率统计页
+# 统计页
 # ===========================================================================
 
 class StatsPage(QWidget):
-    """按号码（简易模式）/ 学生姓名（高级模式）统计抽中次数与概率。"""
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.store: ClassStore | None = None
@@ -569,181 +1184,198 @@ class StatsPage(QWidget):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 12, 18, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(32, 18, 28, 12)
+        lay.setSpacing(8)
 
         head = QHBoxLayout()
         self._t_title = QLabel(t("stats_title"))
-        self._t_title.setStyleSheet(serif_style(20, COLORS["ink"], 600))
+        self._t_title.setStyleSheet(serif_style(24, COLORS["on_surface"], 600) + "; background:transparent;")
         self.summary = QLabel("")
-        self.summary.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:13px;")
+        self.summary.setStyleSheet(
+            f"color:{COLORS['ink_faint']}; font-size:12px; background:transparent;")
+        head.addWidget(_page_kicker("03"))
+        head.addSpacing(10)
         head.addWidget(self._t_title)
         head.addStretch(1)
         head.addWidget(self.summary)
         lay.addLayout(head)
+        lay.addWidget(hairline())
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels([t("col_rank"), t("col_key"), t("col_count"), t("col_pct")])
+        self.table.setHorizontalHeaderLabels(
+            [t("col_rank"), t("col_key"), t("col_count"), t("col_pct")])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.verticalHeader().setDefaultSectionSize(36)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.table.setColumnWidth(3, 200)
+        self.table.verticalHeader().setDefaultSectionSize(48)
+        self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)  # 已有序号列
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setShowGrid(False)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         enable_touch_scroll(self.table)
-        lay.addWidget(self.table, 1)
+        # 占比列自绘（原先 setCellWidget 会漏控件，见 PctBarDelegate 说明）
+        self._pct_delegate = PctBarDelegate(self.table)
+        self.table.setItemDelegateForColumn(3, self._pct_delegate)
+        self.table.setFrameShape(QFrame.NoFrame)
+        self.table.viewport().setAutoFillBackground(False)
+        self.table.viewport().setStyleSheet("background:transparent;")
+        self.table_card = PaperCard(self, radius=20, variant="elevated")
+        tc = QVBoxLayout(self.table_card)
+        tc.setContentsMargins(10, 6, 10, 8)
+        tc.addWidget(self.table)
+        lay.addWidget(self.table_card, 1)
 
     def set_store(self, store: ClassStore):
         self.store = store
         self.refresh()
-        fade_slide_in(self.table, dx=18, dy=0, dur=300, delay=80)
+        fade_in(self.table, dur=240, delay=40)
 
     def retranslate(self):
         self._t_title.setText(t("stats_title"))
         self.table.setHorizontalHeaderLabels(
-            [t("col_rank"), t("col_key"), t("col_count"), t("col_pct"), ""])
+            [t("col_rank"), t("col_key"), t("col_count"), t("col_pct")])
         self.refresh()
 
     def refresh(self):
         if not self.store:
             return
         items = self.store.stats()
-        self.table.clearContents()
-        self.table.setRowCount(0)
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels([t("col_rank"), t("col_key"), t("col_count"), t("col_pct"), ""])
+        self.table.setUpdatesEnabled(False)
         self.table.setRowCount(len(items))
         for i, s in enumerate(items):
             c0 = QTableWidgetItem(str(s["rank"]))
             c0.setTextAlignment(Qt.AlignCenter)
-            c1 = QTableWidgetItem(s["display"])
+            txt = s["display"]
+            if not str(txt).startswith("号码"):
+                txt = f"{int(s.get('num', 0)):02d}    {txt}"
+            c1 = QTableWidgetItem(txt)
             c2 = QTableWidgetItem(str(s["count"]))
             c2.setTextAlignment(Qt.AlignCenter)
-            bar = QProgressBar()
-            bar.setRange(0, 100)
-            bar.setValue(0)
-            bar.setTextVisible(False)
-            bar.setFixedHeight(10)
-            bar.setStyleSheet(
-                f"QProgressBar {{ background:{COLORS['paper_deep']}; border:none; border-radius:5px; }}"
-                f"QProgressBar::chunk {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-                f"stop:0 {COLORS['green']}, stop:1 {COLORS['blue']}); border-radius:5px; }}")
-            c3 = QTableWidgetItem(f"{s['pct']:.1f}%")
-            c3.setTextAlignment(Qt.AlignCenter)
+            c3 = QTableWidgetItem()
+            c3.setData(Qt.UserRole, float(s["pct"]))
             self.table.setItem(i, 0, c0)
             self.table.setItem(i, 1, c1)
             self.table.setItem(i, 2, c2)
-            self.table.setCellWidget(i, 3, bar)
-            self.table.setItem(i, 4, QTableWidgetItem(f"{s['pct']:.1f}%"))
-            # 进度条从 0 增长到实际占比（逐行错峰，一次排开更有节奏感）
-            animate_progress(bar, int(min(100, s["pct"])), dur=400, delay=100 + i * 60)
-        total = sum(s["count"] for s in items)
-        self.summary.setText(f"总抽号次数：{total} 次")
+            self.table.setItem(i, 3, c3)
+        self.table.setUpdatesEnabled(True)
+        top = max((it["pct"] for it in items), default=0.0)
+        self._pct_delegate.restart(top)   # 进度条重新生长（按最高者归一）
+        self.summary.setText(f"{sum(s['count'] for s in items)}")
+
+    def _set_total(self, total: int):
+        self.summary.setText(str(total))
 
 
 # ===========================================================================
-# 配置展示页
+# 配置页
 # ===========================================================================
 
 class ConfigPage(QWidget):
-    """完整展示当前班级配置 + 名单编辑 / 重新配置入口。
-    settings_changed：防重等设置被修改（供主窗口联动刷新摇号池等）。"""
-
     settings_changed = Signal()
+
+    ROWS = [
+        ("row_name", "name"), ("row_mode", "mode"), ("row_total", "total"),
+        ("row_all", "all"), ("row_pool", "pool"),
+        ("row_long", "long"), ("row_short", "short"),
+        ("row_anti", "anti"), ("row_path", "path"),
+    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.store: ClassStore | None = None
         self.cfg: dict = {}
-        self.on_reconfigure = None      # 回调：重新配置
+        self.on_reconfigure = None
         self._build()
 
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 12, 18, 10)
-        outer.setSpacing(10)
-
+        outer.setContentsMargins(0, 0, 0, 0)
         self.scroll = QScrollArea()
-        scroll = self.scroll
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        # 显式选择器（避免无选择器声明沿继承链污染后代按钮背景）
-        scroll.setStyleSheet("QScrollArea { background: transparent; }")
-        enable_touch_scroll(scroll)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        enable_touch_scroll(self.scroll)
         self.inner = QWidget()
-        inner = self.inner
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(0, 0, 6, 0)
-        lay.setSpacing(12)
+        lay = QVBoxLayout(self.inner)
+        lay.setContentsMargins(32, 18, 28, 16)
+        lay.setSpacing(14)
 
-        self.cfg_card = PaperCard()
-        card = self.cfg_card
-        v = QVBoxLayout(card)
-        v.setContentsMargins(20, 16, 20, 16)
-        v.setSpacing(8)
         self._t_title = QLabel(t("config_title"))
-        self._t_title.setStyleSheet(serif_style(20, COLORS["ink"], 600))
-        v.addWidget(self._t_title)
-        self.grid = QGridLayout()
-        self.grid.setHorizontalSpacing(18)
-        self.grid.setVerticalSpacing(10)
-        v.addLayout(self.grid)
-        lay.addWidget(card)
+        self._t_title.setStyleSheet(serif_style(24, COLORS["on_surface"], 600) + "; background:transparent;")
+        hrow = QHBoxLayout()
+        hrow.setSpacing(10)
+        hrow.addWidget(_page_kicker("04"))
+        hrow.addWidget(self._t_title)
+        hrow.addStretch(1)
+        lay.addLayout(hrow)
+        self._t_sub = QLabel(t("config_sub"))
+        self._t_sub.setStyleSheet(
+            f"color:{COLORS['ink_faint']}; font-size:12px; background:transparent;")
+        lay.addWidget(self._t_sub)
+        lay.addWidget(hairline())
 
-        # 名单编辑面板
-        self.roster_card = PaperCard()
+        sec_class = PaperCard(self.inner, radius=20, variant="elevated")
+        sc = QVBoxLayout(sec_class)
+        sc.setContentsMargins(20, 16, 20, 8)
+        sc.setSpacing(8)
+        sc.addWidget(_section_title(t("config_section_class")))
+        self.grid = QGridLayout()
+        self.grid.setHorizontalSpacing(24)
+        self.grid.setVerticalSpacing(0)
+        sc.addLayout(self.grid)
+        lay.addWidget(sec_class)
+
+        lay.addSpacing(4)
+        self.roster_card = PaperCard(self.inner, radius=20, variant="elevated")
         vv = QVBoxLayout(self.roster_card)
         vv.setContentsMargins(20, 16, 20, 16)
-        vv.setSpacing(10)
-        self._t_rtitle = QLabel(t("roster_title"))
-        self._t_rtitle.setStyleSheet(serif_style(20, COLORS["ink"], 600))
-        vv.addWidget(self._t_rtitle)
+        vv.setSpacing(8)
+        self.roster_head = _section_title(t("roster_title"))
+        vv.addWidget(self.roster_head)
         self._t_rhint = QLabel(t("roster_hint"))
-        hint = self._t_rhint
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:12px;")
-        vv.addWidget(hint)
-        self.roster_list = QLabel("")
-        self.roster_list.setWordWrap(True)
+        self._t_rhint.setWordWrap(True)
+        self._t_rhint.setStyleSheet(
+            f"color:{COLORS['ink_soft']}; font-size:12.5px; background:transparent;")
+        vv.addWidget(self._t_rhint)
+        self.roster_list = WrapLabel("")
         self.roster_list.setStyleSheet(
-            f"color:{COLORS['ink']}; font-size:13px; background:{COLORS['paper_deep']};"
-            f"border:1px solid {COLORS['line']}; border-radius:8px; padding:10px;")
+            f"color:{COLORS['ink']}; font-size:13px; background:transparent;"
+            f"border-left:2px solid {COLORS['line_soft']}; padding-left:12px;")
         vv.addWidget(self.roster_list)
-
         rbtn = QHBoxLayout()
-        self.btn_edit_roster = make_button(t("edit_roster"), "primary", min_height=44)
+        self.btn_edit_roster = make_button(t("edit_roster"), "", min_height=44)
         self.btn_edit_roster.clicked.connect(self._edit_roster)
         rbtn.addWidget(self.btn_edit_roster)
         rbtn.addStretch(1)
         vv.addLayout(rbtn)
         lay.addWidget(self.roster_card)
 
-        self.anti_card = PaperCard()
-        card2 = self.anti_card
-        v2 = QVBoxLayout(card2)
+        lay.addSpacing(4)
+        self.anti_card = PaperCard(self.inner, radius=20, variant="elevated")
+        v2 = QVBoxLayout(self.anti_card)
         v2.setContentsMargins(20, 16, 20, 16)
         v2.setSpacing(10)
-        self._t_anti_title = QLabel(t("anti_title"))
-        self._t_anti_title.setStyleSheet(serif_style(20, COLORS["ink"], 600))
-        v2.addWidget(self._t_anti_title)
-        from PySide6.QtWidgets import QSpinBox as _SB
-        # Material 开关 + 说明
+        v2.addWidget(_section_title(t("anti_title")))
         self.sw_anti_label = QLabel(t("anti_label"))
         self.sw_anti_label.setWordWrap(True)
-        self.sw_anti_label.setStyleSheet(f"color:{COLORS['ink']}; font-size:14px; background:transparent;")
-        self.chk_anti = SwitchControl(True)     # 接口与 QCheckBox 对齐：isChecked/setChecked/toggled
+        self.sw_anti_label.setStyleSheet(
+            f"color:{COLORS['ink_soft']}; font-size:13px; background:transparent;")
+        from PySide6.QtWidgets import QSpinBox as _SB
+        self.chk_anti = SwitchControl(True)
         self.spin_anti = _SB()
         self.spin_anti.setRange(app_data.ANTI_DUP_MIN_HOURS, app_data.ANTI_DUP_MAX_HOURS)
         self.spin_anti.setSuffix(" " + t("unit_hours"))
         self.spin_anti.setMinimumHeight(44)
+        self.spin_anti.setFixedWidth(140)
         self.spin_anti.setEnabled(False)
         row = QHBoxLayout()
         row.addWidget(self.sw_anti_label, 1)
         row.addWidget(self.spin_anti)
-        row.addSpacing(10)
+        row.addSpacing(8)
         row.addWidget(self.chk_anti)
         v2.addLayout(row)
         re_row = QHBoxLayout()
@@ -752,84 +1384,18 @@ class ConfigPage(QWidget):
         re_row.addWidget(self.btn_reconfig)
         re_row.addStretch(1)
         v2.addLayout(re_row)
-
         self.chk_anti.toggled.connect(self._on_anti_toggle)
         self.spin_anti.valueChanged.connect(self._on_anti_change)
-        lay.addWidget(card2)
+        lay.addWidget(self.anti_card)
         lay.addStretch(1)
 
-        # 背景装饰色块（视差用；置于卡片下层，仅装饰）
-        self._revealed: set = set()
-        self._blobs: list = []
-        self._blob_bases: list = []
-        self._make_blobs(inner)
-
-        scroll.setWidget(inner)
-        scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
-        inner.installEventFilter(self)
-        outer.addWidget(scroll, 1)
-
-    # ---- 背景有机色块（倾斜椭圆 / 圆角矩形，莫兰迪低透明） ----
-    def _make_blobs(self, inner: QWidget):
-        self._blobs = [
-            _Blob(COLORS["blue_soft"], 66, 360, 300, -8, "ellipse", inner),
-            _Blob(COLORS["camel_soft"], 80, 210, 260, 13, "round", inner),
-            _Blob(COLORS["green_soft"], 60, 200, 200, 24, "ellipse", inner),
-        ]
-        for b in self._blobs:
-            b.lower()
-        self._blob_bases = [(0, 340), (0, 850), (0, 1250)]
-
-    def _place_blobs(self):
-        """按滚动内容宽度摆放色块（右缘对齐、不对称）。"""
-        if not self._blobs:
-            return
-        w = max(sc_w := self.inner.width(), 900)
-        self._blob_bases = [(w - 470, 320), (w - 330, 760), (w - 250, 1180)]
-        self._on_scroll()
-
-    def _on_scroll(self):
-        if not getattr(self, "_blobs", None):
-            return
-        v = self.scroll.verticalScrollBar().value() * 0.45   # 视差：比内容慢
-        for blob, (bx, by) in zip(self._blobs, self._blob_bases):
-            blob.move(int(bx), int(by - v))
-        self._reveal_check()
-
-    def _reveal_check(self):
-        """内容区块滚入视口时轻量渐现上移（一次）。"""
-        if not self.store:
-            return
-        vp = self.scroll.viewport()
-        targets = [self.cfg_card, self.roster_card, self.anti_card]
-        for i, card in enumerate(targets):
-            if id(card) in self._revealed or not card.isVisible():
-                continue
-            y = card.mapTo(vp, QPoint(0, 0)).y()
-            if y < vp.height() * 0.94:
-                self._revealed.add(id(card))
-                fade_slide_in(card, dx=0, dy=26, dur=520, delay=60 + i * 90)   # 渐现上移
-
-    def eventFilter(self, obj, event):
-        if obj is self.inner and event.type() == event.Type.Resize:
-            QTimer.singleShot(0, self._place_blobs)
-        return super().eventFilter(obj, event)
-
-    # 配置项：轮次渲染
-    ROWS = [
-        ("row_name", "name"), ("row_mode", "mode"), ("row_total", "total"),
-        ("row_all", "all"), ("row_pool", "pool"),
-        ("row_long", "long"), ("row_short", "short"),
-        ("row_anti", "anti"), ("row_path", "path"),
-    ]
+        self.scroll.setWidget(self.inner)
+        outer.addWidget(self.scroll, 1)
 
     def set_store(self, store: ClassStore, cfg: dict):
         self.store = store
         self.cfg = cfg
-        self._revealed = set()
         self.refresh()
-        QTimer.singleShot(0, self._place_blobs)
-        self._reveal_check()
 
     def _fmt_list(self, nums: list[int], name_of) -> str:
         if not nums:
@@ -845,11 +1411,13 @@ class ConfigPage(QWidget):
         if not self.store:
             return
         cfg = self.cfg
-        # 清空重建（保证顺序与刷新一致）
         while self.grid.count():
             item = self.grid.takeAt(0)
             w = item.widget()
-            if w:
+            if w is not None:
+                # 先 hide 再 deleteLater：deleteLater 只是排队，旧控件在被真正
+                # 销毁前依然可见、依然按旧几何绘制，会和新行叠成一团乱字。
+                w.hide()
                 w.deleteLater()
 
         students = self.store.get_students(cfg)
@@ -857,8 +1425,9 @@ class ConfigPage(QWidget):
         long_n = self.store.long_exempt()
         short_n = self.store.short_exempt()
         cool_n = self.store.cooling_nums(cfg)
-        pool = [s for s in students if s["num"] not in set(long_n) and
-                s["num"] not in set(short_n) and s["num"] not in set(cool_n)]
+        ls, ss, cs = set(long_n), set(short_n), set(cool_n)
+        pool = [s for s in students if s["num"] not in ls and s["num"] not in ss
+                and s["num"] not in cs]
 
         def val(key):
             if key == "name":
@@ -884,34 +1453,57 @@ class ConfigPage(QWidget):
                 return str(self.store.dir)
             return ""
 
+        r = 0
         for i, (label_key, key) in enumerate(self.ROWS):
             l = QLabel(t(label_key))
-            l.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:13px;")
-            l.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            r = QLabel(val(key))
-            r.setStyleSheet(f"color:{COLORS['ink']}; font-size:13px;")
-            r.setWordWrap(True)
-            r.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            self.grid.addWidget(l, i, 0)
-            self.grid.addWidget(r, i, 1)
+            l.setFixedWidth(110)
+            l.setStyleSheet(
+                f"color:{COLORS['ink_faint']}; font-size:12.5px; background:transparent;")
+            l.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            # 值可能折行（摇号池详情、屏蔽名单、配置文件路径），用 WrapLabel
+            # 让它把「折行后需要的高度」写进 minimumHeight，否则会压住下一行
+            v = WrapLabel(val(key))
+            v.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            v.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            v.setStyleSheet(
+                f"color:{COLORS['ink']}; font-size:13.5px; background:transparent;"
+                "padding:12px 0 12px 0;")
+            l.setStyleSheet(l.styleSheet() + "padding-top:13px;")
+            self.grid.addWidget(l, r, 0)
+            self.grid.addWidget(v, r, 1)
+            line = QFrame()
+            line.setFixedHeight(1)
+            line.setStyleSheet(f"background:{COLORS['line_soft']}; border:none;")
+            self.grid.addWidget(line, r + 1, 0, 1, 2)
+            r += 2
         self.grid.setColumnStretch(1, 1)
-        self.grid.setColumnMinimumWidth(1, 320)
+        self.grid.setColumnMinimumWidth(1, 220)
+        # 行高按「真实列宽」再算一次：构建阶段列宽还没定，WrapLabel 用的是
+        # 临时宽度，算出来会偏大或偏小。这里等布局跑完（0ms 定时器）统一收紧。
+        QTimer.singleShot(0, self._fit_rows)
 
-        # 名单预览
         names = self.store.roster_read()
         advanced = cfg.get("mode") == MODE_ADVANCED
+        self.roster_head.setVisible(advanced)
         self.roster_card.setVisible(advanced)
         if advanced:
-            shown = "，".join(f"{i+1}. {n}" for i, n in enumerate(names))
+            shown = "　".join(f"{i + 1}. {n}" for i, n in enumerate(names))
             self.roster_list.setText(shown if names else t("roster_empty"))
-        # 防重控件状态
         self.chk_anti.setChecked(bool(cfg.get("anti_dup_enabled", True)), animate=False)
         self.spin_anti.setValue(int(cfg.get("anti_dup_hours", 24)))
         self.spin_anti.setEnabled(bool(cfg.get("anti_dup_enabled", True)))
-        # 切到本页（或数据刷新）时，检查滚入视口的渐现
-        QTimer.singleShot(0, self._reveal_check)
 
-    # 防重设置即时保存
+    def _fit_rows(self):
+        self.grid.activate()
+        for v in self.findChildren(WrapLabel):
+            v.fit()
+        self.grid.activate()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # 窗口改宽/改窄后，折行行数会变，行高必须跟着重算
+        QTimer.singleShot(0, self._fit_rows)
+
     def _on_anti_toggle(self, checked: bool):
         if not self.store:
             return
@@ -921,7 +1513,7 @@ class ConfigPage(QWidget):
         self.store.save_config(cfg)
         self.cfg = cfg
         self.refresh()
-        self.settings_changed.emit()      # 联动：首页摇号池/提示立即更新
+        self.settings_changed.emit()
 
     def _on_anti_change(self, v: int):
         if not self.store:
@@ -934,9 +1526,8 @@ class ConfigPage(QWidget):
 
     def retranslate(self):
         self._t_title.setText(t("config_title"))
-        self._t_rtitle.setText(t("roster_title"))
+        self._t_sub.setText(t("config_sub"))
         self._t_rhint.setText(t("roster_hint"))
-        self._t_anti_title.setText(t("anti_title"))
         self.sw_anti_label.setText(t("anti_label"))
         self.btn_edit_roster.setText(t("edit_roster"))
         self.btn_reconfig.setText(t("reconfig_btn"))
@@ -948,18 +1539,15 @@ class ConfigPage(QWidget):
         from .ui_dialogs import RosterEditorDialog
         dlg = RosterEditorDialog(self, self.store)
         if dlg.exec():
-            cfg = self.store.load_config()
-            self.cfg = cfg
+            self.cfg = self.store.load_config()
             self.refresh()
 
 
 # ===========================================================================
-# 屏蔽管理页
+# 屏蔽页
 # ===========================================================================
 
 class ShieldPage(QWidget):
-    """长期/短期屏蔽管理：全部学生列表 + 状态标注 + 批量添加/移除。"""
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.store: ClassStore | None = None
@@ -968,39 +1556,55 @@ class ShieldPage(QWidget):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 12, 18, 10)
-        lay.setSpacing(10)
+        lay.setContentsMargins(32, 18, 28, 12)
+        lay.setSpacing(8)
 
         head = QHBoxLayout()
         self._t_title = QLabel(t("shield_title"))
-        self._t_title.setStyleSheet(serif_style(20, COLORS["ink"], 600))
+        self._t_title.setStyleSheet(serif_style(24, COLORS["on_surface"], 600) + "; background:transparent;")
+        head.addWidget(_page_kicker("05"))
+        head.addSpacing(10)
         head.addWidget(self._t_title)
         head.addStretch(1)
         lay.addLayout(head)
 
         self._t_tip = QLabel(t("shield_hint"))
-        tip = self._t_tip
-        tip.setWordWrap(True)
-        tip.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:12px;")
-        lay.addWidget(tip)
+        self._t_tip.setWordWrap(True)
+        self._t_tip.setStyleSheet(
+            f"color:{COLORS['ink_soft']}; font-size:12px; background:transparent;")
+        lay.addWidget(self._t_tip)
+        lay.addWidget(hairline())
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels([t("col_status"), t("col_num"), t("col_name"), t("col_note")])
+        self.table.setHorizontalHeaderLabels(
+            [t("col_status"), t("col_num"), t("col_name"), t("col_note")])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.verticalHeader().setDefaultSectionSize(38)
+        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)  # 已有序号列
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setShowGrid(False)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         enable_touch_scroll(self.table)
-        lay.addWidget(self.table, 1)
+        # 占比列自绘（原先 setCellWidget 会漏控件，见 PctBarDelegate 说明）
+        self._pct_delegate = PctBarDelegate(self.table)
+        self.table.setItemDelegateForColumn(3, self._pct_delegate)
+        self.table.setFrameShape(QFrame.NoFrame)
+        self.table.viewport().setAutoFillBackground(False)
+        self.table.viewport().setStyleSheet("background:transparent;")
+        self.table_card = PaperCard(self, radius=20, variant="elevated")
+        tc = QVBoxLayout(self.table_card)
+        tc.setContentsMargins(10, 6, 10, 8)
+        tc.addWidget(self.table)
+        lay.addWidget(self.table_card, 1)
 
         bar = QHBoxLayout()
-        bar.setSpacing(10)
+        bar.setSpacing(8)
         self.btn_add_long = make_button(t("add_long"), "", min_height=44)
         self.btn_rm_long = make_button(t("rm_long"), "ghost", min_height=44)
         self.btn_add_short = make_button(t("add_short"), "", min_height=44)
@@ -1014,7 +1618,8 @@ class ShieldPage(QWidget):
 
         bar2 = QHBoxLayout()
         self.summary = QLabel("")
-        self.summary.setStyleSheet(f"color:{COLORS['ink_soft']}; font-size:13px;")
+        self.summary.setStyleSheet(
+            f"color:{COLORS['ink_faint']}; font-size:12px; background:transparent;")
         self.btn_clear_long = make_button(t("clear_long"), "danger", min_height=44)
         self.btn_clear_short = make_button(t("clear_short"), "danger", min_height=44)
         bar2.addWidget(self.summary)
@@ -1034,7 +1639,7 @@ class ShieldPage(QWidget):
         self.store = store
         self.cfg = cfg
         self.refresh()
-        fade_slide_in(self.table, dx=18, dy=0, dur=300, delay=80)
+        fade_in(self.table, dur=240, delay=40)
 
     def retranslate(self):
         self._t_title.setText(t("shield_title"))
@@ -1055,36 +1660,31 @@ class ShieldPage(QWidget):
         students = self.store.get_students(self.cfg)
         long_n = set(self.store.long_exempt())
         short_n = set(self.store.short_exempt())
-        self.table.setRowCount(0)
+        self.table.setUpdatesEnabled(False)
         self.table.setRowCount(len(students))
         for i, s in enumerate(students):
             num, name = s["num"], s.get("name", "")
             if num in long_n:
-                status = t("status_long")
+                status, color = t("status_long"), COLORS["primary"]
             elif num in short_n:
-                status = t("status_short")
+                status, color = t("status_short"), COLORS["camel"]
             else:
-                status = t("status_normal")
+                status, color = t("status_normal"), COLORS["outline"]
             c0 = QTableWidgetItem(status)
-            c0.setTextAlignment(Qt.AlignCenter)
-            if num in long_n:
-                c0.setBackground(QColor("#F2E0DF"))
-            elif num in short_n:
-                c0.setBackground(QColor("#E3E8DF"))
-            else:
-                c0.setBackground(QColor(COLORS["paper_deep"]))
+            c0.setForeground(QColor(color))
             c1 = QTableWidgetItem(f"{num:02d}")
             c1.setTextAlignment(Qt.AlignCenter)
             c2 = QTableWidgetItem(name or t("unnamed"))
-            if num in long_n:
-                c2.setForeground(QColor(COLORS["pink_dark"]))
             c3 = QTableWidgetItem(t("note_never") if num in long_n else
                                   (t("note_today") if num in short_n else ""))
+            c3.setForeground(QColor(COLORS["outline"]))
             self.table.setItem(i, 0, c0)
             self.table.setItem(i, 1, c1)
             self.table.setItem(i, 2, c2)
             self.table.setItem(i, 3, c3)
-        self.summary.setText(t("shield_summary", total=len(students), long=len(long_n), short=len(short_n)))
+        self.table.setUpdatesEnabled(True)
+        self.summary.setText(t("shield_summary", total=len(students),
+                               long=len(long_n), short=len(short_n)))
 
     def _selected_nums(self) -> list[int]:
         rows = sorted({i.row() for i in self.table.selectedItems()})
@@ -1096,7 +1696,6 @@ class ShieldPage(QWidget):
         return out
 
     def _pick(self, kind: str, add: bool):
-        """打开多选对话框加人。"""
         if not self.store:
             return
         students = self.store.get_students(self.cfg)
@@ -1117,21 +1716,15 @@ class ShieldPage(QWidget):
             return
         nums = self._selected_nums()
         if not nums:
-            snack(self, t("snack_select_first"))
-            return
+            snack(self, t("snack_select_first")); return
+        cur = set(self.store.long_exempt() if kind == "long" else self.store.short_exempt())
+        if add:
+            cur.update(nums)
+        else:
+            cur.difference_update(nums)
         if kind == "long":
-            cur = set(self.store.long_exempt())
-            if add:
-                cur.update(nums)
-            else:
-                cur.difference_update(nums)
             self.store.set_long_exempt(sorted(cur))
         else:
-            cur = set(self.store.short_exempt())
-            if add:
-                cur.update(nums)
-            else:
-                cur.difference_update(nums)
             self.store.set_short_exempt(sorted(cur))
         self.refresh()
 
