@@ -275,17 +275,30 @@ def _gui_tests(app, base: Path) -> None:
     # 弹窗遮罩几何：必须盖住“顶层窗口”（父控件是子页面时此前会错位）
     from .ui_widgets import MaterialAlert, Snackbar, snack
     al = MaterialAlert(win.draw_page, "测试", "遮罩几何测试", buttons=[("好", True)])
+    # 关键是「映射前就位」：窗口一旦被 map，再 setGeometry 会让分层窗口重建，
+    # 表现为弹窗先以错的尺寸出现再跳一下（实测单次 show 从 14ms 涨到 127ms）。
+    al._prepare_show()
+    from PySide6.QtCore import QRect, QPoint
+    top = QRect(win.mapToGlobal(QPoint(0, 0)), win.size())
+    geo0 = al.geometry()
+    card0 = al.card.geometry().getRect()
+    ok0 = (abs(geo0.x() - top.x()) <= 2 and abs(geo0.y() - top.y()) <= 2
+           and abs(geo0.width() - top.width()) <= 2
+           and abs(geo0.height() - top.height()) <= 2)
+    _check("弹窗映射前已对齐主窗客户区", ok0,
+           f"dialog={geo0.x()},{geo0.y()}..{geo0.width()}x{geo0.height()} "
+           f"vs client={top.x()},{top.y()}..{top.width()}x{top.height()}")
     al.show()
     app.processEvents()
     geo = al.geometry()
     # 正确基准是父窗口的**客户区**（不是 frameGeometry：它含 31px 标题栏，
     # 用它对齐会让弹窗整体上移半个标题栏）
-    from PySide6.QtCore import QRect, QPoint
-    top = QRect(win.mapToGlobal(QPoint(0, 0)), win.size())
     ok = (abs(geo.x() - top.x()) <= 2 and abs(geo.y() - top.y()) <= 2
           and abs(geo.width() - top.width()) <= 2 and abs(geo.height() - top.height()) <= 2)
     _check("弹窗遮罩对齐主窗客户区", ok,
            f"dialog={geo.x()},{geo.y()}..{geo.width()}x{geo.height()} vs client={top.x()},{top.y()}..{top.width()}x{top.height()}")
+    card1 = al.card.geometry().getRect()
+    _check("弹窗显示后卡片不再重排", card0 == card1, f"{card0} -> {card1}")
     al.hide()
     app.processEvents()
 

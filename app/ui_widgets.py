@@ -1478,6 +1478,7 @@ class MaterialDialog(QDialog):
         self.setModal(True)
         self.scrim_cancel = scrim_cancel
         self._closing = False
+        self._prepared = False
         self._card_width = card_width
         self._scrim = 0.0
         self.setWindowTitle(title or "提醒")
@@ -1570,22 +1571,61 @@ class MaterialDialog(QDialog):
                          int(geo.width()), int(geo.height()))
         return geo
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    def setVisible(self, visible):
+        """在窗口 map **之前**把几何和尺寸全部定好。
+
+        原来这些全写在 showEvent 里：Qt 已经按默认位置/尺寸创建并映射了原生
+        窗口，再 setGeometry 等于让分层窗口（无边框 + 透明背景）重建一次。
+        实测单次 show() 从 14ms 涨到 127ms（进程内第一个弹窗能到 800ms），
+        画面表现就是卡片先以错的尺寸出现、再跳到位——用户说的「抽搐」。
+        """
+        if visible:
+            self._prepare_show()
+        super().setVisible(visible)
+
+    def show(self):
+        # QWidget::show() 在 C++ 里直接调 setVisible，不会派发到 Python 的重写，
+        # 所以 show / exec 这两个入口必须自己前置一次。
+        self._prepare_show()
+        super().show()
+
+    def exec(self):
+        self._prepare_show()
+        return super().exec()
+
+    def _prepare_show(self):
+        if self._prepared:
+            return
+        self._closing = False
         geo = self._sync_geometry()
         avail_w = max(320, int(geo.width() * 0.9))
         avail_h = max(320, int(geo.height() * 0.86))
         self.card.setFixedWidth(min(self._card_width, avail_w))
         self.card.setMaximumHeight(avail_h)
+        # 先把宽度定死并强制排一遍：折行标签的 sizeHint 依赖真实宽度，
+        # 不排就拿不到准确的正文高度，show 之后还会二次收缩（又是一次跳）。
+        self._card_lay.activate()
+        self.body_lay.activate()
         body_need = self.body.sizeHint().height() + 30
         # 正文有多高就给多高，但不超过卡片可用高度减去标题/按钮/边距。
         # 原来固定取 avail_h*0.56：内容一多就一律截断成半屏 + 滚动条，
         # 底部的设置项（比如「管理员密码」）直接被滚出可视区。
         chrome = 150
         self.scroll.setMinimumHeight(max(56, min(body_need, int(avail_h) - chrome)))
+        outer = self.layout()
+        if outer is not None:
+            outer.activate()          # 让卡片先拿到最终高度（居中定位才稳）
+        self._card_lay.activate()
         # 首帧先把卡片设为「入场起点」：否则 show() 到 singleShot(0) 之间
         # 会以终态完整画一帧，看起来是闪一下再缩回去弹入。
         m_prepare_entry(self.card, s=0.85, dy=38)
+        self._prepared = True
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._prepared:
+            # 兜底：万一路径没走 setVisible（子类直接 map），至少别丢尺寸
+            self._prepare_show()
         QTimer.singleShot(0, self._pop_in)
 
     def _pop_in(self):
