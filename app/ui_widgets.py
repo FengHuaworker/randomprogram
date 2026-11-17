@@ -1639,20 +1639,11 @@ class MaterialDialog(QDialog):
         s.setDuration(340); s.setEasingCurve(QEasingCurve.OutQuint)
         s.start(); self._scrim_a = s
 
-        def _card_in():
-            # 卡片落定后，标题/正文/按钮错落弹入（此时 card 的 effect 已撤）
-            seq = []
-            if self.title_label is not None:
-                seq.append(self.title_label)
-            seq.append(self.scroll)
-            for i in range(self.action_lay.count()):
-                it = self.action_lay.itemAt(i)
-                w = it.widget() if it is not None else None
-                if w is not None:
-                    seq.append(w)
-            m_stagger(seq, gap=48, dy=18, s=0.93, dur=480)
-
-        m_pop_in(self.card, dy=38, s=0.85, dur=660, on_done=_card_in)
+        # 卡片带着内容整体落定。**不再**给标题/正文/按钮单独叠错落动画：
+        # 那会把已经显示出来的内容重置成 a=0 再重播一遍，观感是卡片出现后
+        # 内容「闪一下、再一个个冒出来」——就是用户说的抽搐。
+        # （实测 660ms 卡片动画结束时 title/scroll/btn 同时被置 a=0。）
+        m_pop_in(self.card, dy=38, s=0.85, dur=560)
 
     def _fade_close(self, result: int):
         if self._closing:

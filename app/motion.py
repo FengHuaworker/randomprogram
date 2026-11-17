@@ -410,6 +410,25 @@ def animate(widget: QWidget, *, dur: int = 520, delay: int = 0,
         anim.start()
 
     if delay > 0:
+        # 延迟启动也必须**立刻**落到起点：否则控件会先以终态原样亮着，
+        # 等 delay 到点才跳回 s0/dy0/a0 重新播——看起来就是「先闪一下、
+        # 再从头淡入」。stagger() 里除第一个之外的元素都会走到这里。
+        try:
+            import shiboken6
+            if shiboken6.isValid(widget) and widget.isVisible():
+                eff = _effect(widget)
+                half_diag = math.hypot(widget.width(), widget.height()) / 2.0
+                eff._bleed = float(math.ceil(
+                    max(max(abs(dx0), abs(dx1), abs(dy0), abs(dy1)),
+                        (max(s0, s1, 1.0) - 1.0) * half_diag) + 3.0))
+                eff.invalidate()
+                try:
+                    eff.setEnabled(True)
+                except Exception:
+                    pass
+                eff.set_values(s=s0, dx=dx0, dy=dy0, a=a0, rot=rot0)
+        except Exception:
+            pass
         QTimer.singleShot(delay, _run)
     else:
         _run()

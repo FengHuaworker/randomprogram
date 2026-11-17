@@ -299,6 +299,27 @@ def _gui_tests(app, base: Path) -> None:
            f"dialog={geo.x()},{geo.y()}..{geo.width()}x{geo.height()} vs client={top.x()},{top.y()}..{top.width()}x{top.height()}")
     card1 = al.card.geometry().getRect()
     _check("弹窗显示后卡片不再重排", card0 == card1, f"{card0} -> {card1}")
+
+    # 入场结束后内容不能被重置成透明再重播：老实现会在卡片动画结束（660ms）
+    # 时给标题/正文/按钮各叠一段错落动画（a0=0），观感是内容先闪没再冒出来。
+    from PySide6.QtTest import QTest
+    from .motion import MotionEffect
+    QTest.qWait(760)
+    app.processEvents()
+    kids = [al.title_label, al.scroll]
+    for i in range(al.action_lay.count()):
+        it = al.action_lay.itemAt(i)
+        if it is not None and it.widget() is not None:
+            kids.append(it.widget())
+    reset = []
+    for w in kids:
+        if w is None:
+            continue
+        e = w.graphicsEffect()
+        if isinstance(e, MotionEffect) and e.isEnabled() and e.a < 0.99:
+            reset.append(type(w).__name__)
+    _check("弹窗内容入场后不被重置", not reset, f"透明重播的控件: {reset}")
+
     al.hide()
     app.processEvents()
 
