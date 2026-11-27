@@ -94,7 +94,8 @@
 |---|---|
 | ![配置页](docs/img/config.png) | ![屏蔽页](docs/img/shield.png) |
 
-以上截图由 `tools/make_screenshots.py` 用虚构名单（王小明、李小华……）自动生成。
+页面截图由 `tools/make_screenshots.py` 用虚构名单（王小明、李小华……）自动生成；
+悬浮球与全屏层截图来自 `tools/preview_float.py` 的离屏渲染。
 
 ---
 
