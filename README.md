@@ -11,8 +11,12 @@
 
 ## 下载
 
-到 [Releases](../../releases) 下载 `RandomPicker_Motion_v1.1.0.exe`（动效版，即源码目录里的 `随机抽号_Motion.exe`），
+到 [Releases](../../releases) 下载 `RandomPicker_Motion_v1.2.0.exe`（动效版，即源码目录里的 `随机抽号_Motion.exe`），
 双击即可运行，无需安装、无需 Python 环境。
+
+> **升级只需替换 exe**：程序是单文件，资源（图标、字体）都打在里面；班级数据、记录、密码、悬浮球位置
+> 全部保存在 exe 所在目录（`classes\`、`last_class.txt`、`admin.json`、`float_state.json`），
+> 换成新 exe 即完成升级，数据一字不动。
 
 > 附件名用英文是因为 GitHub 上传接口不接受中文文件名，程序本身完全中文。单文件打包，首次启动会有 1～3 秒解包时间。若系统提示「未知发布者」，是未做代码签名所致，
 > 点「更多信息 → 仍要运行」即可。
@@ -31,6 +35,8 @@
 - **管理员密码**：由使用者自己设置（首次点「管理记录」时引导设置，至少 4 位；之后可在设置里修改）。
   只保存 PBKDF2 摘要与随机盐，不存明文；忘记密码时删除程序目录下的 `admin.json` 即可重设。
 - **中英双语**：界面可即时切换，无需重启。
+- **悬浮球**：贴边常驻的小球。单击展开迷你卡片（只有「已抽 N 位」，点空白处就是开始/结束，另带重置与回主窗两个图标）；双击直接全屏压暗抽一号、给出结果后丝滑淡出并恢复亮度；长按可拖动，松手吸附边缘并记住位置。主窗口在前台时小球自动收起且不接受操作。
+- **托盘常驻**：关窗口不退出，右下角托盘右键可打开主窗口、显示/隐藏小球、退出程序。悬浮球与主界面的抽号记录写的是同一份数据，五个页面同步刷新。
 - **可靠性**：`config.json` 损坏自动用 `.bak` 恢复；两者都坏则引导重新配置，不静默丢数据。
 
 ## 界面
@@ -55,6 +61,10 @@ pip install PySide6
 python main.py                # 启动
 python main.py --selftest     # 内置自检：数据层 + GUI 冒烟，退出码 0 = 通过
 python tests/test_data.py     # 数据层回归测试（不依赖 Qt）
+python tests/test_float.py    # 悬浮球 / 托盘逻辑回归
+python tests/test_float_input.py   # 真实鼠标事件（单击 / 双击 / 长按拖动 / 前台屏蔽）
+python tests/real_tray_test.py     # 真实桌面：托盘菜单、前台自动隐藏、全屏抽号动画
+python tools/preview_float.py      # offscreen 渲染小球 / 迷你卡 / 全屏层到 video/float_check/
 python tools/preview.py       # offscreen 渲染各页面截图到 ui_preview/
 python tools/make_screenshots.py  # 生成 README 用截图到 docs/img/
 ```
@@ -89,16 +99,23 @@ random-picker/
 │   ├── ui_pages.py             # 页面：抽号/记录/统计/配置/屏蔽
 │   ├── ui_dialogs.py           # 弹窗：班级名/配置向导/名单编辑/设置
 │   ├── ui_main.py              # 主窗口：顶栏 + 导航 + 快捷键
+│   ├── ui_float.py             # 悬浮球 / 迷你卡 / 全屏压暗抽号层 / 托盘常驻
 │   ├── lang.py                 # 中英文案表
 │   ├── security.py             # 管理员密码（用户自设的 PBKDF2 摘要，存 admin.json）
 │   └── selftest.py             # 内置自检
-├── tests/test_data.py          # 数据层回归测试
+├── tests/
+│   ├── test_data.py            # 数据层回归测试
+│   ├── test_float.py           # 悬浮球 / 托盘逻辑回归
+│   ├── test_float_input.py     # 真实鼠标事件：单击 / 双击 / 长按拖动
+│   └── real_tray_test.py       # 真实桌面：托盘菜单、前台隐藏、全屏抽号
 ├── tools/                      # 开发工具（不打进 exe）
 │   ├── preview.py              # offscreen 界面预览
 │   ├── make_screenshots.py     # 生成 README 截图
 │   ├── shot_live.py            # 抓真实窗口（PrintWindow，不依赖桌面合成）
 │   ├── film_live.py            # PostMessage 点击 + 逐帧抓图，量动画位移
 │   ├── audit_overlap.py        # 控件遮挡审计
+│   ├── preview_float.py        # 小球 / 卡片 / 全屏层离屏渲染
+│   ├── make_shots_2x.py        # 2× 超采样截图（宣传片素材）
 │   └── probes/                 # 一次性排查脚本（阴影/像素/布局/性能）
 ├── assets/app_icon.ico
 ├── assets/fonts/               # 备用字体（OFL）
@@ -141,6 +158,27 @@ random-picker/
 - **字体**：全站宋体，按 M3 type scale 分级（display / headline / title / body / label）。
 
 ## 更新日志
+
+### v1.2.0（2026-11-27）
+
+- **悬浮球**：应用启动后贴左缘垂直居中常驻（拖动后记住位置，松手吸附边缘）。
+  单击展开迷你卡片（只剩「已抽 N 位」+ 重置 / 回主窗两个图标，点空白处即开始/结束），
+  双击直接全屏压暗抽一号、给出结果后淡出并恢复亮度，长按拖动换位置。
+  主窗口前台时小球自动收起且不接受操作；全屏抽号与托盘菜单打开期间也暂时隐藏。
+- **托盘常驻**：`setQuitOnLastWindowClosed(False)`，关闭主窗口改为收进托盘（右键：打开主窗口 /
+  显示小球 / 退出程序）。真正退出走托盘「退出程序」。
+- **全屏结果层不带白底**：压暗层上直接用浅色字（栏目标记 + 190px 大字 + 姓名 + 已记录），
+  靠压暗强度与柔和暗场保证对比，不再垫一张白卡。
+- **抽号口径统一**：悬浮球、全屏层、主界面共用 `ClassStore.record_draws` 与同一个
+  `notify_external_draw()` 刷新入口，五页同步，不会各记各的。
+- **表格表头对齐**：表头改为与单元格同侧（左）对齐，修掉「学生姓名 / 备注」这类拉宽列
+  表头飘在内容右侧三百多像素的错位；统计页右上角孤零零的裸数字改为「共 N 人次」。
+- **修掉切页残影**：主窗口是无边框半透明窗口，所有页面共用一张 backing store。原先切页让整页
+  从 `a=0.82` 淡入，透过页面的那 18% 露出来的是**上一页留在缓冲里的像素**——连点 Tab 时上一页
+  的表头一直隐隐压在新页顶上（实测 `a=0.99` 都看得见）。现改为页面栈自铺实色底 + 切页同步
+  重绘 + 入场只做 8px 上浮不再整体淡入，从原理上不可能再透出旧像素。
+- **启动顺序**：`dock.activate()` 提到 `startup()` 之前——班级人数为 0 时首次启动会弹模态配置
+  向导（`exec()` 阻塞），原先把托盘与悬浮球的创建一起堵死了。
 
 ### v1.1.0（2026-11-17）
 

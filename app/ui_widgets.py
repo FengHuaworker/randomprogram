@@ -161,6 +161,20 @@ def paint_icon(p: QPainter, name: str, rect: QRectF, color: str | QColor,
     elif name == "refresh":
         p.drawArc(QRectF(4, 4, 16, 16), 60 * 16, 270 * 16)
         polyline((16.4, 3.6), (16.4, 8.0), (12.0, 8.0))
+    elif name == "app_window":
+        # 一扇窗：外框 + 标题栏分隔 + 两颗窗控点
+        p.drawRoundedRect(QRectF(3.4, 4.4, 17.2, 15.2), 2.8, 2.8)
+        line(3.8, 9.0, 20.2, 9.0)
+        p.setBrush(col)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QPointF(6.6, 6.8), 0.85, 0.85)
+        p.drawEllipse(QPointF(9.0, 6.8), 0.85, 0.85)
+    elif name == "grip":
+        p.setBrush(col)
+        p.setPen(Qt.NoPen)
+        for gy in (8.0, 12.0, 16.0):
+            for gx in (9.0, 15.0):
+                p.drawEllipse(QPointF(gx, gy), 1.15, 1.15)
     elif name == "download":
         line(12, 4, 12, 14.6)
         polyline((7.4, 10.6), (12, 15.2), (16.6, 10.6))

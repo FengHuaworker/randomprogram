@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut, QPainter, QColor
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QComboBox, QLabel, QLineEdit, QSpinBox, QStackedWidget, QMenu, QFrame)
 
@@ -25,6 +25,23 @@ from .ui_pages import DrawPage, HistoryPage, StatsPage, ConfigPage, ShieldPage
 from .ui_dialogs import ClassNameDialog, SetupWizard, AppSettingsDialog
 
 
+class PageStack(QStackedWidget):
+    """页面栈：**自己把底色刷成实色**。
+
+    页面入场是「整页淡入」（a 从 0.82 走到 1）。淡入期间页面是半透明的，
+    露出来的东西取决于缓冲里原来是什么：页面栈自己不铺底色时，露出的就是
+    **上一个页面**残留的像素 —— 连点 Tab 时上一页的表头会一直隐隐透在新页
+    顶上，就是用户说的「残影」。这里每次绘制先把底色铺满，半透明处露出的
+    就只是干净底色。
+    """
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(COLORS["surface"]))
+        p.end()
+        super().paintEvent(event)
+
+
 class MainWindow(QMainWindow):
     """应用主窗口。"""
 
@@ -33,6 +50,8 @@ class MainWindow(QMainWindow):
         self.manager = manager
         self.store: ClassStore | None = None
         self.cfg: dict = {}
+        self.float_dock = None        # 由 app.main 在构造后注入（托盘 + 悬浮球）
+        self._force_quit = False
         self.setWindowTitle(t("app_title"))
         self._build()
         self._bind()
@@ -114,7 +133,9 @@ class MainWindow(QMainWindow):
         root.addWidget(topbar)
 
         # ---------- 页面栈 + 底部导航 ----------
-        self.stack = QStackedWidget()
+        # 页面栈自己铺实色底（见 PageStack）：淡入时半透明露出的只能是底色，
+        # 不能是上一页残留在缓冲里的像素。
+        self.stack = PageStack()
         self.draw_page = DrawPage()
         self.history_page = HistoryPage()
         self.stats_page = StatsPage()
@@ -289,6 +310,28 @@ class MainWindow(QMainWindow):
         self.config_page.refresh()
         self.draw_page.refresh()
 
+    def notify_external_draw(self):
+        """悬浮球/全屏层抽完后调用：五页统一从同一个 store 重读，杜绝各记各的。"""
+        if not self.store:
+            return
+        self.draw_page.stop_silent()
+        self.draw_page.refresh()
+        self.history_page.refresh()
+        self.stats_page.refresh()
+        self.config_page.refresh()
+        self.shield_page.refresh()
+        if self.float_dock is not None:
+            self.float_dock._refresh_tray()
+
+    def show_main(self):
+        """从托盘/迷你卡回到主窗口。"""
+        if self.isMinimized():
+            self.showNormal()
+        elif not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
     def _refresh_page(self, index: int):
         pages = [self.draw_page, self.history_page, self.stats_page,
                  self.config_page, self.shield_page]
@@ -300,6 +343,10 @@ class MainWindow(QMainWindow):
         # 先切后刷新会让页面带着旧内容画出一帧再跳变。
         self._refresh_page(index)
         self.stack.setCurrentIndex(index)
+        # 先把整块底重新刷一遍（同步），再起淡入：否则缓冲区里还是上一页的
+        # 像素，淡入的前几十毫秒会把上一页透出来（残影）。
+        if self.isVisible():
+            self.stack.repaint()
         page = self.stack.currentWidget()
         if self.isVisible() and page is not None:
             # 整页只做一个动作：上浮 8px + 淡入 200ms，零延迟、不缩放。
@@ -406,6 +453,8 @@ class MainWindow(QMainWindow):
             getattr(pg, "retranslate", lambda: None)()
         self._refresh_all()
         self.draw_page.refresh()
+        if self.float_dock is not None:
+            self.float_dock.retranslate()
 
     # ------------------------------------------------------------- 键盘
     def keyPressEvent(self, event):
@@ -480,4 +529,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.draw_page.stop_silent()
         app_data.flush()          # 关闭前把后台写盘队列清空，保证不丢最后一笔记录
+        dock = getattr(self, "float_dock", None)
+        # 常驻模式：点 X 只是把窗口收进托盘，抽号数据和悬浮球都还在。
+        # 只有托盘「退出程序」会先把 _force_quit 置真，才真正结束进程。
+        if (not getattr(self, "_force_quit", False) and dock is not None
+                and getattr(dock, "tray", None) is not None):
+            event.ignore()
+            self.hide()
+            dock.notify_closed_to_tray()
+            return
         super().closeEvent(event)

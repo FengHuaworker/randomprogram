@@ -107,7 +107,7 @@ def main():
 
     theme.register_fonts(str(ROOT))
     theme.apply_theme(app)
-    from tools._probe_env import temp_classes
+    from tools.probes._probe_env import temp_classes
     base = temp_classes("rp_audit_")
     win = MainWindow(ClassManager(str(base)))
     win.startup()

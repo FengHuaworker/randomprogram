@@ -93,6 +93,8 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("随机抽号")
+    # 常驻：关掉主窗口只是收进托盘，不能把进程一起带走
+    app.setQuitOnLastWindowClosed(False)
 
     from . import theme
     # 注册随包字体（必须在 QApplication 创建之后）
@@ -125,7 +127,22 @@ def main() -> int:
         win.showMaximized()
         app.processEvents()
         splash.finish()                       # 标识淡出
-        QTimer.singleShot(520, win.startup)   # 等标识消隐后再弹配置向导
+
+        # 托盘 + 桌面悬浮球。放在主窗构造之后：窗口还没进事件循环时
+        # 就有托盘，用户任何时候点关闭都不会「关掉就找不回来」。
+        from .ui_float import FloatDock
+        dock = FloatDock(win)
+        win.float_dock = dock
+        _APP_WINDOWS.append(dock)
+
+        def _start():
+            # 先让托盘与悬浮球就位，再走 startup()：startup() 在班级人数为 0
+            # 时会弹「首次使用向导」，那是模态 exec()，会把后面的 activate()
+            # 一直堵住 —— 表现就是「窗开了、托盘和球都没有」。
+            dock.activate()
+            win.startup()                     # 首次使用会先弹配置向导
+
+        QTimer.singleShot(520, _start)
 
     QTimer.singleShot(1250, _boot)            # 让呼吸动画完整展示一会儿
     return app.exec()

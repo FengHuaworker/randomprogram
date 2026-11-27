@@ -19,6 +19,8 @@ backups/
 last_class.txt
 _crash.txt
 _actions.log
+# 悬浮球位置 / 显隐（每台机器各自一份）
+float_state.json
 
 # ---- 本地发布产物（exe 走 GitHub Releases，不进 git） ----
 发布版/
@@ -28,6 +30,9 @@ _actions.log
 ui_preview/
 tools/_shots/
 tools/qtfonts/
+.tmp/
+# 宣传片与自检截图（成品只放 Releases / 本地）
+video/
 
 # ---- 遗留旧素材 ----
 Randomer.zip

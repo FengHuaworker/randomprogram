@@ -1070,6 +1070,9 @@ class HistoryPage(QWidget):
         self.table.setHorizontalHeaderLabels(
             [t("col_no"), t("col_time"), t("col_num"), t("col_name"), t("col_mode")])
         hh = self.table.horizontalHeader()
+        # 表头与单元格同侧对齐：居中表头配左对齐内容时，拉宽的那一列
+        # （学生姓名）表头会飘到离内容三百多像素的地方，看着像错位。
+        hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hh.setSectionResizeMode(0, QHeaderView.Fixed)
         hh.setSectionResizeMode(1, QHeaderView.Fixed)
         hh.setSectionResizeMode(2, QHeaderView.Fixed)
@@ -1127,14 +1130,14 @@ class HistoryPage(QWidget):
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             c0 = QTableWidgetItem(str(len(rows) - i))
-            c0.setTextAlignment(Qt.AlignCenter)
+            c0.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             c1 = QTableWidgetItem(str(r.get("time", "")))
             c2 = QTableWidgetItem(str(int(r.get("num", 0))).zfill(2))
-            c2.setTextAlignment(Qt.AlignCenter)
+            c2.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             c3 = QTableWidgetItem(r.get("name") or "—")
             c4 = QTableWidgetItem(t("mode_advanced") if r.get("mode") == MODE_ADVANCED
                                   else t("mode_simple"))
-            c4.setTextAlignment(Qt.AlignCenter)
+            c4.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             for ci, c in enumerate((c0, c1, c2, c3, c4)):
                 self.table.setItem(i, ci, c)
         self.table.setUpdatesEnabled(True)
@@ -1205,6 +1208,7 @@ class StatsPage(QWidget):
         self.table.setHorizontalHeaderLabels(
             [t("col_rank"), t("col_key"), t("col_count"), t("col_pct")])
         header = self.table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -1248,13 +1252,13 @@ class StatsPage(QWidget):
         self.table.setRowCount(len(items))
         for i, s in enumerate(items):
             c0 = QTableWidgetItem(str(s["rank"]))
-            c0.setTextAlignment(Qt.AlignCenter)
+            c0.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             txt = s["display"]
             if not str(txt).startswith("号码"):
                 txt = f"{int(s.get('num', 0)):02d}    {txt}"
             c1 = QTableWidgetItem(txt)
             c2 = QTableWidgetItem(str(s["count"]))
-            c2.setTextAlignment(Qt.AlignCenter)
+            c2.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             c3 = QTableWidgetItem()
             c3.setData(Qt.UserRole, float(s["pct"]))
             self.table.setItem(i, 0, c0)
@@ -1264,10 +1268,10 @@ class StatsPage(QWidget):
         self.table.setUpdatesEnabled(True)
         top = max((it["pct"] for it in items), default=0.0)
         self._pct_delegate.restart(top)   # 进度条重新生长（按最高者归一）
-        self.summary.setText(f"{sum(s['count'] for s in items)}")
+        self.summary.setText(t("stats_summary", n=sum(s['count'] for s in items)))
 
     def _set_total(self, total: int):
-        self.summary.setText(str(total))
+        self.summary.setText(t("stats_summary", n=total))
 
 
 # ===========================================================================
@@ -1579,6 +1583,7 @@ class ShieldPage(QWidget):
         self.table.setHorizontalHeaderLabels(
             [t("col_status"), t("col_num"), t("col_name"), t("col_note")])
         header = self.table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
@@ -1673,7 +1678,7 @@ class ShieldPage(QWidget):
             c0 = QTableWidgetItem(status)
             c0.setForeground(QColor(color))
             c1 = QTableWidgetItem(f"{num:02d}")
-            c1.setTextAlignment(Qt.AlignCenter)
+            c1.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             c2 = QTableWidgetItem(name or t("unnamed"))
             c3 = QTableWidgetItem(t("note_never") if num in long_n else
                                   (t("note_today") if num in short_n else ""))
