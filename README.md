@@ -13,7 +13,7 @@
 
 ## 下载与升级
 
-到 **[Releases](../../releases)** 下载 `RandomPicker_Motion_v1.2.0.exe`，双击运行，无需安装、
+到 **[Releases](https://github.com/FengHuaworker/randomprogram/releases)** 下载 `RandomPicker_Motion_v1.2.0.exe`，双击运行，无需安装、
 无需 Python 环境。附件名用英文是因为 GitHub 上传接口不接受中文文件名，程序本身完全中文。
 
 - 单文件打包，首次启动有 1～3 秒解包时间。
@@ -207,7 +207,7 @@ random-picker/
 ## 更新日志
 
 - **v1.2.0（2026-11-27）**：悬浮球 + 托盘常驻；全屏抽号层去掉白底；抽号记录统一；
-  修切页残影、启动被配置向导阻塞、表头错位。详见 [v1.2.0 Release](../../releases/tag/v1.2.0)。
+  修切页残影、启动被配置向导阻塞、表头错位。详见 [v1.2.0 Release](https://github.com/FengHuaworker/randomprogram/releases/tag/v1.2.0)。
 - **v1.1.0（2026-11-17）**：管理员密码改为用户自设；修弹窗「抽搐」的两个根因。
 - **v1.0.0（2026-11-16）**：M3 全面改版，批量抽号、屏蔽、防重、统计、导出。
 
