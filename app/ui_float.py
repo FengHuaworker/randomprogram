@@ -1184,7 +1184,9 @@ class DimOverlay(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         w, h = self.width(), self.height()
         # 压暗：底黑 + 轻微暗角，避免整屏死黑一片
-        p.fillRect(self.rect(), QColor(9, 12, 17, int(255 * 0.70 * self.dim)))
+        # 0.80 而不是 0.70：主界面本身信息量很大（大数字、按钮、名单），
+        # 0.70 时底下的「07 孙悦」和结果「03 张小强」会视觉上叠在一起。
+        p.fillRect(self.rect(), QColor(9, 12, 17, int(255 * 0.80 * self.dim)))
         if self.dim > 0.01:
             vg = QRadialGradient(QPointF(w / 2, h * 0.46),
                                  max(w, h) * 0.62)
@@ -1194,9 +1196,10 @@ class DimOverlay(QWidget):
             p.fillRect(self.rect(), QBrush(vg))
             # 中心的柔暗区：文字直接落在暗场上，靠它保证对比，
             # 而不是再垫一张白卡。
-            spot = QRadialGradient(QPointF(w / 2, h / 2), max(w, h) * 0.46)
-            spot.setColorAt(0.0, QColor(4, 6, 10, int(95 * self.dim)))
-            spot.setColorAt(0.68, QColor(4, 6, 10, int(30 * self.dim)))
+            spot = QRadialGradient(QPointF(w / 2, h / 2), max(w, h) * 0.52)
+            spot.setColorAt(0.0, QColor(4, 6, 10, int(150 * self.dim)))
+            spot.setColorAt(0.55, QColor(4, 6, 10, int(96 * self.dim)))
+            spot.setColorAt(0.78, QColor(4, 6, 10, int(30 * self.dim)))
             spot.setColorAt(1.0, QColor(4, 6, 10, 0))
             p.fillRect(self.rect(), QBrush(spot))
 
